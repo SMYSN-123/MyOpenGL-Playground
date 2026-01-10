@@ -1,0 +1,25 @@
+# === 编译垃圾 ===
+build/
+out/
+bin/
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+
+# === 编译器/IDE生成的缓存 ===
+.vscode/
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.user
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# === 系统垃圾 ===
+.DS_Store
+Thumbs.db
