@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD 17)
 include_directories(
     ${CMAKE_SOURCE_DIR}/extern/glfw/include
     ${CMAKE_SOURCE_DIR}/extern/glad/include
+    ${CMAKE_SOURCE_DIR}/src 
 )
 
 # 3. 寻找库文件路径 (告诉链接器去哪里找 .lib)
@@ -20,6 +21,7 @@ link_directories(
 # 注意：glad.c 是 C 文件，所以项目可能需要混编
 add_executable(MyGraphicsEngine 
     src/main.cpp 
+    src/stb_image_setup.cpp
     extern/glad/src/glad.c
 )
 
