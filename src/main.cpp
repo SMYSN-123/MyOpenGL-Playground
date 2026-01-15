@@ -1,4 +1,4 @@
-#include <glad/glad.h>
+﻿#include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include "Shader.h"
@@ -25,23 +25,35 @@ int main() {
     Shader ourShader("../src/shader.vs", "../src/shader.fs");
 
     // 2. 创建 Texture
-    Texture boxTexture("../src/container.jpg");
+    Texture box("../src/container.jpg");
+    Texture face("../src/awesomeface.png");
 
     // 3. 顶点数据 (位置 x3, 颜色 x3, 纹理 x2)
     float vertices[] = {
         // 位置              // 颜色             // 纹理坐标 (UV)
-         0.5f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,   1.0f, 0.0f, // 右下
+         0.5f, -0.5f, 0.0f,  0.0f, 0.0f, 1.0f,   1.0f, 0.0f, // 右下
         -0.5f, -0.5f, 0.0f,  0.0f, 1.0f, 0.0f,   0.0f, 0.0f, // 左下
-         0.0f,  0.5f, 0.0f,  0.0f, 0.0f, 1.0f,   0.5f, 1.0f  // 顶部 (UV 0.5, 1.0 表示水平居中，垂直在顶端)
+        //  0.0f,  0.5f, 0.0f,  0.0f, 0.0f, 1.0f,   0.5f, 1.0f  // 顶部 (UV 0.5, 1.0 表示水平居中，垂直在顶端)
+        0.5f,  0.5f, 0.0f,   1.0f, 0.0f, 0.0f,   1.0f, 1.0f,   // 右上
+        -0.5f,  0.5f, 0.0f,   1.0f, 1.0f, 0.0f,   0.0f, 1.0f    // 左上
     };
 
-    unsigned int VBO, VAO;
+    unsigned int indexs[] = {
+        0, 1, 2,
+        1, 2, 3
+    };
+
+    unsigned int VBO, VAO, EBO;
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
+    glGenBuffers(1, &EBO);
 
     glBindVertexArray(VAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexs), indexs, GL_STATIC_DRAW);
 
     // 属性 0: 位置 (Offset 0)
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
@@ -55,6 +67,14 @@ int main() {
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
     glEnableVertexAttribArray(2);
 
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    ourShader.use();
+    ourShader.setInt("ourTexture1", 0);
+    ourShader.setInt("ourTexture2", 1);
+
+    glBindVertexArray(0);
+
     while (!glfwWindowShouldClose(window)) {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
             glfwSetWindowShouldClose(window, true);
@@ -63,14 +83,25 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT);
 
         // 绑定纹理
-        boxTexture.bind(0);
+        box.bind(0);
+        face.bind(1);
 
         // 激活 Shader
         ourShader.use();
 
-        // 绘制
+        glm::mat4 trans = glm::mat4(1.0f);
+        trans = glm::rotate(trans, (float)glfwGetTime(), glm::vec3(0.0f, 0.0f, 1.0f));
+        trans = glm::translate(trans, glm::vec3(0.5f, -0.5f, 0.0f));
+        ourShader.setMat4("transform", trans);
+
         glBindVertexArray(VAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+
+        trans = glm::mat4(1.0f);
+        trans = glm::scale(trans, glm::vec3(abs(sin((float)glfwGetTime())), abs(sin((float)glfwGetTime())), abs(sin((float)glfwGetTime()))));
+        ourShader.setMat4("transform", trans);
+
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
         glfwSwapBuffers(window);
         glfwPollEvents();

@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD 17)
 include_directories(
     ${CMAKE_SOURCE_DIR}/extern/glfw/include
     ${CMAKE_SOURCE_DIR}/extern/glad/include
+    ${CMAKE_SOURCE_DIR}/extern/glm
     ${CMAKE_SOURCE_DIR}/src 
 )
 
