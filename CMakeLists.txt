@@ -4,6 +4,13 @@ project(MyGraphicsEngine)
 # 1. 设置 C++ 标准
 set(CMAKE_CXX_STANDARD 17)
 
+set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INSTALL_PDB OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INJECT_DEBUG_POSTFIX OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(extern/assimp)
+
 # 2. 包含头文件路径 (告诉编译器去哪里找 .h)
 # ${CMAKE_SOURCE_DIR} 代表当前项目根目录
 include_directories(
@@ -11,6 +18,9 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/extern/glad/include
     ${CMAKE_SOURCE_DIR}/extern/glm
     ${CMAKE_SOURCE_DIR}/src 
+
+    ${CMAKE_SOURCE_DIR}/extern/assimp/include
+    ${CMAKE_BINARY_DIR}/extern/assimp/include
 )
 
 # 3. 寻找库文件路径 (告诉链接器去哪里找 .lib)
@@ -31,4 +41,5 @@ add_executable(MyGraphicsEngine
 target_link_libraries(MyGraphicsEngine 
     glfw3 
     opengl32
+    assimp
 )
