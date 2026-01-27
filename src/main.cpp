@@ -59,17 +59,17 @@ int main() {
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) { return -1; }
 
+    glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+
     Shader ourShader("../src/shader.vs", "../src/shader.fs");
     Shader cubeShader("../src/cube.vs", "../src/cube.fs");
+    Shader screenShader("../src/screen.vs", "../src/screen.fs");
 
-    loadTexture cube("../src/get.jpg");
+    loadTexture cube("../src/container.jpg");
     loadTexture floor("../src/get.png");
-    loadTexture redWindow("../src/blending_transparent_window.png");
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -118,7 +118,7 @@ int main() {
      0.5f,  0.5f,  0.5f,  1.0f, 0.0f, // bottom-right
     -0.5f,  0.5f, -0.5f,  0.0f, 1.0f, // top-left
     -0.5f,  0.5f,  0.5f,  0.0f, 0.0f  // bottom-left        
-};
+    };
 
     float planeVertices[] = {
         -5.0f, -0.5f,  5.0f,  0.0f, 0.0f,
@@ -130,31 +130,26 @@ int main() {
         -5.0f, -0.5f,  5.0f,  0.0f, 0.0f,
     };
 
-    float transparentVertices[] = {
-        // positions         // texture Coords (swapped y coordinates because texture is flipped upside down)
-        0.0f,  0.5f,  0.0f,  0.0f,  0.0f,
-        0.0f, -0.5f,  0.0f,  0.0f,  1.0f,
-        1.0f, -0.5f,  0.0f,  1.0f,  1.0f,
+    float quadVertices[] = {
+        // positions   // texCoords
+        -1.0f,  1.0f,  0.0f, 1.0f,
+        -1.0f, -1.0f,  0.0f, 0.0f,
+        1.0f, -1.0f,  1.0f, 0.0f,
 
-        0.0f,  0.5f,  0.0f,  0.0f,  0.0f,
-        1.0f, -0.5f,  0.0f,  1.0f,  1.0f,
-        1.0f,  0.5f,  0.0f,  1.0f,  0.0f
+        -1.0f,  1.0f,  0.0f, 1.0f,
+        1.0f, -1.0f,  1.0f, 0.0f,
+        1.0f,  1.0f,  1.0f, 1.0f
     };
 
-    struct RenderItem
-    {
-        float distance;
-        glm::vec3 position;
+    float mirrorVertices[] = {
+    -0.3f, 0.95f,  1.0f, 1.0f,
+    -0.3f, 0.65f,  1.0f, 0.0f,
+    0.3f, 0.65f,  0.0f, 0.0f,
+
+    -0.3f, 0.95f,  1.0f, 1.0f,
+    0.3f, 0.65f,  0.0f, 0.0f,
+    0.3f, 0.95f,  0.0f, 1.0f
     };
-
-    std::vector<RenderItem> transparentObjects;
-
-    std::vector<glm::vec3> windows;
-    windows.push_back(glm::vec3(-1.5f,  0.0f, -0.48f));
-    windows.push_back(glm::vec3( 1.5f,  0.0f,  0.51f));
-    windows.push_back(glm::vec3( 0.0f,  0.0f,  0.7f));
-    windows.push_back(glm::vec3(-0.3f,  0.0f, -2.3f));
-    windows.push_back(glm::vec3( 0.5f,  0.0f, -0.6f));
 
     // cube VAO
     unsigned int cubeVAO, cubeVBO;
@@ -180,21 +175,102 @@ int main() {
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
     glBindVertexArray(0);
-    // transparent VAO
-    unsigned int transparentVAO, transparentVBO;
-    glGenVertexArrays(1, &transparentVAO);
-    glGenBuffers(1, &transparentVBO);
-    glBindVertexArray(transparentVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, transparentVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(transparentVertices), transparentVertices, GL_STATIC_DRAW);
+    // screen quad VAO
+    unsigned int quadVAO, quadVBO;
+    glGenVertexArrays(1, &quadVAO);
+    glGenBuffers(1, &quadVBO);
+    glBindVertexArray(quadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glBindVertexArray(0);
+    // mirror VAO
+    unsigned int mirrorVAO, mirrorVBO;
+    glGenVertexArrays(1, &mirrorVAO);
+    glGenBuffers(1, &mirrorVBO);
+    glBindVertexArray(mirrorVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, mirrorVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(mirrorVertices), &mirrorVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+    // fbo
+    unsigned int fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    // texture
+    unsigned int texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 800, 600, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);    
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+    // rbo
+    unsigned int rbo;
+    glGenRenderbuffers(1, &rbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 800, 600);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+
+    if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cout<<"ERROR::FRAMEBUFFER:: Framebuffer is not complete!"<<std::endl;
+    std::cout << "FBO Configured" << std::endl;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // mirrorfbo
+    unsigned int mirrorfbo;
+    glGenFramebuffers(1, &mirrorfbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, mirrorfbo);
+    // mirrortexture
+    unsigned int mirrortexture;
+    glGenTextures(1, &mirrortexture);
+    glBindTexture(GL_TEXTURE_2D, mirrortexture);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 320, 100, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);    
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mirrortexture, 0);
+    // mirrorrbo
+    unsigned int mirrorrbo;
+    glGenRenderbuffers(1, &mirrorrbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, mirrorrbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 320, 100);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+
+    if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cout<<"ERROR::FRAMEBUFFER:: Framebuffer is not complete!"<<std::endl;
+    std::cout << "MIRRORFBO Configured" << std::endl;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 23. 解绑 VBO (可选，是个好习惯)
+    // ...
+    // glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     cubeShader.use();
     cubeShader.setInt("texture1", 0);
+    screenShader.use();
+    screenShader.setInt("screenTexture", 0);
+    screenShader.setFloat("offset_x", 1.0f / SCR_WIDTH);
+    screenShader.setFloat("offset_y", 1.0f / SCR_HEIGHT);
 
     while (!glfwWindowShouldClose(window)) {
 
@@ -204,40 +280,40 @@ int main() {
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
+        //录制后视镜
+        glBindFramebuffer(GL_FRAMEBUFFER, mirrorfbo);
+        glViewport(0, 0, 320, 100);
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
 
-        transparentObjects.clear();
-
-                ourShader.use();
+        ourShader.use();
 
         glm::mat4 model = glm::mat4(1.0f);
         ourShader.setMat4("model", model);
-        glm::mat4 projection = glm::mat4(1.0f);
-        projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 100.0f);
+        camera.Yaw += 180.0f;
+        camera.Pitch = -camera.Pitch;
+        camera.ProcessMouseMovement(0, 0, false); 
+        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 100.0f);
         glm::mat4 view = camera.GetViewMatrix();
+        camera.Yaw -= 180.0f;
+        camera.Pitch = -camera.Pitch;
+        camera.ProcessMouseMovement(0, 0, true); 
         ourShader.setMat4("projection", projection);
         ourShader.setMat4("view", view);
 
         cubeShader.use();
-
-
-        // glDisable(GL_CULL_FACE);
-
         glBindVertexArray(floorVAO);
+
+        cubeShader.setMat4("projection", projection);
+        cubeShader.setMat4("view", view);
 
         floor.bind(0);
         cubeShader.setMat4("model", glm::mat4(1.0f));
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
-        glEnable(GL_CULL_FACE);
-
         cubeShader.use();
-
         glBindVertexArray(cubeVAO);
-
-        cubeShader.setMat4("projection", projection);
-        cubeShader.setMat4("view", view);
 
         cube.bind(0);
         model = glm::mat4(1.0f);
@@ -249,39 +325,76 @@ int main() {
         cubeShader.setMat4("model", model);
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
-        glDisable(GL_CULL_FACE);
+        //录制主屏幕
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, 800, 600);
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
 
-        glBindVertexArray(transparentVAO);
+        ourShader.use();
 
-        redWindow.bind(0);
-        for(const auto& pos : windows)
-        {
-            float dist = glm::length(camera.Position - pos);
-            transparentObjects.push_back({dist, pos});
-        }
+        model = glm::mat4(1.0f);
+        ourShader.setMat4("model", model);
+        projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 100.0f);
+        view = camera.GetViewMatrix();
+        ourShader.setMat4("projection", projection);
+        ourShader.setMat4("view", view);
 
-        std::sort(transparentObjects.begin(), transparentObjects.end(), [](const RenderItem& a, const RenderItem& b){
-            return a.distance > b.distance;
-        });
+        cubeShader.use();
+        glBindVertexArray(floorVAO);
 
-        for(const auto& item : transparentObjects)
-        {
-            model = glm::mat4(1.0f);
-            model = glm::translate(model, item.position);
-            cubeShader.setMat4("model", model);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-        }
+        cubeShader.setMat4("projection", projection);
+        cubeShader.setMat4("view", view);
 
-        glEnable(GL_CULL_FACE);
+        floor.bind(0);
+        cubeShader.setMat4("model", glm::mat4(1.0f));
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        cubeShader.use();
+        glBindVertexArray(cubeVAO);
+
+        cube.bind(0);
+        model = glm::mat4(1.0f);
+        model = glm::translate(model, glm::vec3(-1.0f, 0.0f, -1.0f));
+        cubeShader.setMat4("model", model);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+        model = glm::mat4(1.0f);
+        model = glm::translate(model, glm::vec3(2.0f, 0.0f, 0.0f));
+        cubeShader.setMat4("model", model);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDisable(GL_DEPTH_TEST);
+        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        screenShader.use();
+
+        glBindVertexArray(quadVAO);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindVertexArray(mirrorVAO);
+        glBindTexture(GL_TEXTURE_2D, mirrortexture);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
     glDeleteVertexArrays(1, &cubeVAO);
     glDeleteVertexArrays(1, &floorVAO);
+    glDeleteVertexArrays(1, &quadVAO);
+    glDeleteVertexArrays(1, &mirrorVAO);
     glDeleteBuffers(1, &cubeVBO);
     glDeleteBuffers(1, &floorVBO);
-    glfwTerminate();
+    glDeleteBuffers(1, &quadVBO);
+    glDeleteBuffers(1, &quadVBO);
+    glDeleteBuffers(1, &mirrorVBO);
+    glDeleteRenderbuffers(1, &rbo);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &texture);
+    glDeleteTextures(1, &mirrortexture);
     return 0;
 }
 
