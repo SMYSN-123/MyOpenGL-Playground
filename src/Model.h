@@ -74,17 +74,10 @@ private:
             vector.z = mesh->mVertices[i].z;
             vertex.Position = vector;
 
-            if (mesh->HasNormals())
-            {
-                vector.x = mesh->mNormals[i].x;
-                vector.y = mesh->mNormals[i].y;
-                vector.z = mesh->mNormals[i].z;
-                vertex.Normal = vector;
-            }
-            else 
-            {
-                vertex.Normal = glm::vec3(0.0f);
-            }
+            vector.x = mesh->mNormals[i].x;
+            vector.y = mesh->mNormals[i].y;
+            vector.z = mesh->mNormals[i].z;
+            vertex.Normal = vector;
 
             if(mesh->mTextureCoords[0])
             {
@@ -113,10 +106,15 @@ private:
         if(mesh->mMaterialIndex >= 0)
         {
             aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
+            // 1. 漫反射
             std::vector<Texture> diffuseMaps = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse");
             textures.insert(textures.end(), std::make_move_iterator(diffuseMaps.begin()), std::make_move_iterator(diffuseMaps.end()));
+            // 2. 镜面光
             std::vector<Texture> specularMaps = loadMaterialTextures(material, aiTextureType_SPECULAR, "texture_specular");
             textures.insert(textures.end(), std::make_move_iterator(specularMaps.begin()), std::make_move_iterator(specularMaps.end()));
+            // 3. // 尝试加载 Ambient
+            std::vector<Texture> reflectionMaps = loadMaterialTextures(material, aiTextureType_AMBIENT, "texture_reflection");
+            textures.insert(textures.end(), std::make_move_iterator(reflectionMaps.begin()), std::make_move_iterator(reflectionMaps.end()));
         }
 
         return Mesh(vertices, indices, textures);
@@ -162,7 +160,7 @@ private:
 
         int width, height, nrComponents;
 
-        stbi_set_flip_vertically_on_load(true);
+        // stbi_set_flip_vertically_on_load(true);
 
         unsigned char* data = stbi_load(filename.c_str(), &width, &height, &nrComponents, 0);
 
@@ -195,7 +193,6 @@ private:
         
             // 创建一个 1x1 的洋红色(Magenta) 像素，代表“材质丢失”
             // 这样显卡就不会因为采样空纹理而崩成白屏了
-            glBindTexture(GL_TEXTURE_2D, textureID);
             unsigned char errorColor[] = { 255, 0, 255 }; 
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, errorColor);
         
@@ -207,6 +204,7 @@ private:
         
             stbi_image_free(data); // 这里的 data 是 NULL，free 也是安全的
         }
+
         return textureID;
     }
 };
