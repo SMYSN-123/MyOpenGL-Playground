@@ -67,8 +67,6 @@ int main() {
     Shader screenShader("../src/screen.vs", "../src/screen.fs");
     Shader skyboxShader("../src/skybox.vs", "../src/skybox.fs");
 
-    Model nanosuit("../extern/nanosuit/nanosuit.obj");
-
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
 
@@ -182,6 +180,14 @@ int main() {
     };
     unsigned int cubemapTexture = loadCubemap(faces);
 
+    unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ID, "Matrices");
+    unsigned int uniformBlockIndexcubeShader = glGetUniformBlockIndex(cubeShader.ID, "Matrices");
+    unsigned int uniformBlockIndexskyboxShader = glGetUniformBlockIndex(skyboxShader.ID, "Matrices");
+
+    glUniformBlockBinding(ourShader.ID, uniformBlockIndexourShader, 0);
+    glUniformBlockBinding(cubeShader.ID, uniformBlockIndexcubeShader, 0);
+    glUniformBlockBinding(skyboxShader.ID, uniformBlockIndexskyboxShader, 0);
+
     // cube VAO
     unsigned int cubeVAO, cubeVBO;
     glGenVertexArrays(1, &cubeVAO);
@@ -195,23 +201,15 @@ int main() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glBindVertexArray(0);
 
-    // screen quad VAO
-    unsigned int quadVAO, quadVBO;
-    glGenVertexArrays(1, &quadVAO);
-    glGenBuffers(1, &quadVBO);
-    glBindVertexArray(quadVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glBindVertexArray(0);
+    // empty VAO
+    unsigned int emptyVAO;
+    glGenVertexArrays(1, &emptyVAO);
 
     // fbo
     unsigned int fbo;
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    
     // texture
     unsigned int texture;
     glGenTextures(1, &texture);
@@ -225,6 +223,7 @@ int main() {
     glBindTexture(GL_TEXTURE_2D, 0);    
 
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+
     // rbo
     unsigned int rbo;
     glGenRenderbuffers(1, &rbo);
@@ -250,6 +249,15 @@ int main() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glBindVertexArray(0);
 
+    // ubo
+    unsigned int uboMatrices;
+    glGenBuffers(1, &uboMatrices);
+    glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
+    glBufferData(GL_UNIFORM_BUFFER, 2 * sizeof(glm::mat4), NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+    glBindBufferRange(GL_UNIFORM_BUFFER, 0, uboMatrices, 0, 2 * sizeof(glm::mat4));
+
     cubeShader.use();
     cubeShader.setInt("skybox", 0);
 
@@ -258,6 +266,8 @@ int main() {
 
     skyboxShader.use();
     skyboxShader.setInt("skybox", 0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // --- 渲染循环 ---
     while (!glfwWindowShouldClose(window)) {
@@ -276,54 +286,18 @@ int main() {
 
         ourShader.use();
 
-        ourShader.setFloat("material.shininess", 32.0f); 
-        ourShader.setVec3("viewPos", camera.Position);
-
-        // 定向光方向 (指向下方和稍远处)
-        ourShader.setVec3("dirLight.direction", -0.2f, -1.0f, -0.3f);
-        // 稍微给点环境光，不要死黑
-        ourShader.setVec3("dirLight.ambient", 0.2f, 0.2f, 0.2f);
-        // 漫反射强度
-        ourShader.setVec3("dirLight.diffuse", 0.5f, 0.5f, 0.5f);
-        // 镜面高光
-        ourShader.setVec3("dirLight.specular", 1.0f, 1.0f, 1.0f);
-
-        // 这是一个好习惯：为了防止未初始化的点光源导致除以0错误，简单初始化一下
-        // 或者在 shader 循环里把 NR_POINT_LIGHTS 改成 0 先测试
-        for(int i = 0; i < 4; i++) {
-        std::string number = std::to_string(i);
-        ourShader.setVec3("pointLights[" + number + "].position", 0.0f, 0.0f, 0.0f);
-        ourShader.setFloat("pointLights[" + number + "].constant", 1.0f);
-        ourShader.setFloat("pointLights[" + number + "].linear", 0.09f);
-        ourShader.setFloat("pointLights[" + number + "].quadratic", 0.032f);
-        // 把点光源颜色设为0，先只看定向光
-        ourShader.setVec3("pointLights[" + number + "].ambient", 0.0f, 0.0f, 0.0f);
-        ourShader.setVec3("pointLights[" + number + "].diffuse", 0.0f, 0.0f, 0.0f);
-        ourShader.setVec3("pointLights[" + number + "].specular", 0.0f, 0.0f, 0.0f);
-        }
-        // 聚光灯同理，先初始化一下防止计算炸裂
-        ourShader.setFloat("spotLight.constant", 1.0f);
-        ourShader.setFloat("spotLight.linear", 0.09f);
-        ourShader.setFloat("spotLight.quadratic", 0.032f);
-
         glm::mat4 model = glm::mat4(1.0f);
         ourShader.setMat4("model", model);
+
         int winWidth, winHeight;
         glfwGetFramebufferSize(window, &winWidth, &winHeight);
         glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)winWidth/(float)winHeight, 0.1f, 100.0f);
+        glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(glm::mat4), glm::value_ptr(projection));
+
         glm::mat4 view = camera.GetViewMatrix();
-        ourShader.setMat4("projection", projection);
-        ourShader.setMat4("view", view);
-
-        glm::mat3 normalMatrix = glm::mat3(transpose(inverse(model)));
-        ourShader.setMat3("normalMatrix", normalMatrix);
-        ourShader.setVec3("viewPos", camera.Position);
-
-        ourShader.setInt("skybox", 10);
-        glActiveTexture(GL_TEXTURE10);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
-
-        nanosuit.Draw(ourShader);
+        glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
+        glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
 
         cubeShader.use();
         glBindVertexArray(cubeVAO);
@@ -332,16 +306,12 @@ int main() {
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
 
         cubeShader.setVec3("cameraPos", camera.Position);
-        cubeShader.setMat4("projection", projection);
-        cubeShader.setMat4("view", view);
         model = glm::mat4(1.0f);
         model = glm::translate(model, glm::vec3(-1.0f, 0.0f, -1.0f));
         glm::mat3 NormalMatrix = glm::mat3(transpose(inverse(model)));
         cubeShader.setMat3("NormalMatrix", NormalMatrix);
         cubeShader.setMat4("model", model);
         glDrawArrays(GL_TRIANGLES, 0, 36);
-
-        // backpack.Draw(cubeShader);
 
         glBindVertexArray(cubeVAO);
 
@@ -359,9 +329,6 @@ int main() {
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
-        glm::mat4 skyView = glm::mat4(glm::mat3(view)); 
-        skyboxShader.setMat4("projection", projection);
-        skyboxShader.setMat4("view", skyView);
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
         glDepthMask(GL_TRUE);
@@ -379,21 +346,23 @@ int main() {
         screenShader.setFloat("offset_x", 1.0f / winWidth);
         screenShader.setFloat("offset_y", 1.0f / winHeight);
 
-        glBindVertexArray(quadVAO);
+        glBindVertexArray(emptyVAO);
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texture);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
     glDeleteVertexArrays(1, &cubeVAO);
-    glDeleteVertexArrays(1, &quadVAO);
     glDeleteBuffers(1, &cubeVBO);
-    glDeleteBuffers(1, &quadVBO);
-    glDeleteBuffers(1, &quadVBO);
     glDeleteRenderbuffers(1, &rbo);
     glDeleteFramebuffers(1, &fbo);
+    glDeleteBuffers(1, &uboMatrices);
     glDeleteTextures(1, &texture);
+
+    glfwTerminate();
+
     return 0;
 }
 

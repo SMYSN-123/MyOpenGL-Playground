@@ -6,8 +6,12 @@ out vec3 Normal;
 out vec3 Position;
 
 uniform mat4 model;
-uniform mat4 view;
-uniform mat4 projection;
+
+layout (std140) uniform Matrices
+{
+    uniform mat4 projection;
+    uniform mat4 view;
+};
 
 uniform mat3 NormalMatrix;
 
@@ -16,4 +20,5 @@ void main()
     gl_Position = projection * view * model * vec4(aPos, 1.0);
     Position = vec3(model * vec4(aPos, 1.0));
     Normal = NormalMatrix * aNormal;
+    //gl_PointSize = gl_Position.z;
 }
