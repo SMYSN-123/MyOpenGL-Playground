@@ -7,6 +7,7 @@
 #include "Mesh.h"
 #include "Model.h"
 #include "loadTexture.h"
+#include "FPSCounter.h"
 
 #include <glm.hpp>
 #include <gtc/matrix_transform.hpp>
@@ -57,15 +58,20 @@ int main() {
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) { return -1; }
 
     glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+
+    FPSCounter fpsCounter;
 
     Shader ourShader("../src/shader.vs", "../src/shader.fs");
     Shader cubeShader("../src/cube.vs", "../src/cube.fs");
     Shader screenShader("../src/screen.vs", "../src/screen.fs");
     Shader skyboxShader("../src/skybox.vs", "../src/skybox.fs");
+    Shader colorShader("../src/color.vs", "../src/color.fs", "../src/color.gs");
+    Shader normalDisplayShader("../src/normalDisplay.vs", "../src/normalDisplay.fs", "../src/normalDisplay.gs");
+
+    Model backpack("../extern/backpack/backpack.obj");
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -180,13 +186,17 @@ int main() {
     };
     unsigned int cubemapTexture = loadCubemap(faces);
 
-    unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ID, "Matrices");
-    unsigned int uniformBlockIndexcubeShader = glGetUniformBlockIndex(cubeShader.ID, "Matrices");
-    unsigned int uniformBlockIndexskyboxShader = glGetUniformBlockIndex(skyboxShader.ID, "Matrices");
+    unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexcubeShader = glGetUniformBlockIndex(cubeShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexskyboxShader = glGetUniformBlockIndex(skyboxShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexcolorShader = glGetUniformBlockIndex(colorShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexnormalDisplayShader = glGetUniformBlockIndex(normalDisplayShader.ProgramID, "Matrices");
 
-    glUniformBlockBinding(ourShader.ID, uniformBlockIndexourShader, 0);
-    glUniformBlockBinding(cubeShader.ID, uniformBlockIndexcubeShader, 0);
-    glUniformBlockBinding(skyboxShader.ID, uniformBlockIndexskyboxShader, 0);
+    glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
+    glUniformBlockBinding(cubeShader.ProgramID, uniformBlockIndexcubeShader, 0);
+    glUniformBlockBinding(skyboxShader.ProgramID, uniformBlockIndexskyboxShader, 0);
+    glUniformBlockBinding(colorShader.ProgramID, uniformBlockIndexcolorShader, 0);
+    glUniformBlockBinding(normalDisplayShader.ProgramID, uniformBlockIndexnormalDisplayShader, 0);
 
     // cube VAO
     unsigned int cubeVAO, cubeVBO;
@@ -322,6 +332,17 @@ int main() {
         cubeShader.setMat4("model", model);
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
+        colorShader.use();
+        colorShader.setFloat("time", static_cast<float>(glfwGetTime()));
+        model = glm::mat4(1.0f);
+        colorShader.setMat4("model", model);
+        backpack.Draw(colorShader);
+
+        normalDisplayShader.use();
+        model = glm::mat4(1.0f);
+        normalDisplayShader.setMat4("model", model);
+        backpack.Draw(normalDisplayShader);
+
         skyboxShader.use();
         glBindVertexArray(skyboxVAO);
         glDepthMask(GL_FALSE);
@@ -351,6 +372,8 @@ int main() {
         glBindTexture(GL_TEXTURE_2D, texture);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
+        fpsCounter.update(window);
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
@@ -371,6 +394,8 @@ unsigned int loadCubemap(std::vector<std::string> faces)
     unsigned int texture;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_CUBE_MAP, texture);
+
+    stbi_set_flip_vertically_on_load(false);
 
     int width, height, nrChannels;
     for(unsigned int i = 0; i < faces.size(); i++)
