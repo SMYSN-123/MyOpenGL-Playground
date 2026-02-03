@@ -28,11 +28,11 @@ void main()
     //     -1, -1, -1
     // );
 
-    float kernel[9] = float[](
-    1.0 / 16, 2.0 / 16, 1.0 / 16,
-    2.0 / 16, 4.0 / 16, 2.0 / 16,
-    1.0 / 16, 2.0 / 16, 1.0 / 16  
-);
+//     float kernel[9] = float[](
+//     1.0 / 16, 2.0 / 16, 1.0 / 16,
+//     2.0 / 16, 4.0 / 16, 2.0 / 16,
+//     1.0 / 16, 2.0 / 16, 1.0 / 16  
+// );
 
     // float kernel[9] = float[](
     //     1, 1, 1,
@@ -40,12 +40,21 @@ void main()
     //     1, 1, 1
     // );
 
+    float kernel[9] = float[](
+        0, -1, 0,
+        -1, 5, -1,
+        0, -1, 0
+    );
+
 
     vec3 col = vec3(0.0);
     for(int i = 0; i < 9; i++)
     {
         col += vec3(texture(screenTexture, TexCoords.st + offsets[i])) * kernel[i];
     }
+
+    // float average = 0.2126 * col.r + 0.7152 * col.g + 0.0722 * col.b;
+    // col = vec3(average);
 
     FragColor = vec4(col, 1.0);
 }
