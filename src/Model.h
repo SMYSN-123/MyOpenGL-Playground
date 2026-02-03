@@ -24,6 +24,22 @@ public:
             meshes[i].Draw(shader);
         }
     }
+
+    void DrawInstanced(Shader& shader, unsigned int amount)
+    {
+        for(unsigned int i = 0; i < meshes.size(); i++)
+        {
+            meshes[i].DrawInstanced(shader, amount);
+        }
+    }
+
+    void ConfigureInstancedArray(unsigned int instanceVBO)
+    {
+        for(unsigned int i = 0; i < meshes.size(); i++)
+        {
+        meshes[i].SetupInstancedAttributes(instanceVBO);
+        }
+    }
 private:
     std::vector<Mesh> meshes;
     std::string directory;

@@ -22,6 +22,10 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
 
+unsigned int fbo;
+unsigned int texture;
+unsigned int rbo;
+
 Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
 
 float deltaTime = 0.0f;
@@ -68,10 +72,11 @@ int main() {
     Shader cubeShader("../src/cube.vs", "../src/cube.fs");
     Shader screenShader("../src/screen.vs", "../src/screen.fs");
     Shader skyboxShader("../src/skybox.vs", "../src/skybox.fs");
-    Shader colorShader("../src/color.vs", "../src/color.fs", "../src/color.gs");
-    Shader normalDisplayShader("../src/normalDisplay.vs", "../src/normalDisplay.fs", "../src/normalDisplay.gs");
+    Shader colorShader("../src/color.vs", "../src/color.fs");
+    Shader instancingShader("../src/instancing.vs", "../src/instancing.fs");
 
-    Model backpack("../extern/backpack/backpack.obj");
+    Model planet("../extern/planet/planet.obj");
+    Model rock("../extern/rock/rock.obj");
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -186,42 +191,55 @@ int main() {
     };
     unsigned int cubemapTexture = loadCubemap(faces);
 
+    unsigned int amount = 10000;
+    std::vector<glm::mat4> modelMatrices;
+    modelMatrices.reserve(amount);
+    srand(static_cast<unsigned int>(glfwGetTime()));
+    float radius = 50.0f;
+    float offset = 2.5f;
+    for(unsigned int i = 0; i < amount; i++)
+    {
+        glm::mat4 model = glm::mat4(1.0f);
+        // 1. 位移：分布在半径为 'radius' 的圆形上，偏移的范围是 [-offset, offset]
+        float angle = static_cast<float>(i) / static_cast<float>(amount) * 360.0f;
+        float displacement = (rand() % static_cast<int>(2 * offset * 100)) / 100.0f - offset;
+        float x = sin(angle) * radius + displacement;
+        displacement = (rand() % static_cast<int>(2 * offset * 100)) / 100.0f - offset;
+        float y = displacement * 0.4f;
+        displacement = (rand() % static_cast<int>(2 * offset * 100)) / 100.0f - offset;
+        float z = cos(angle) * radius + displacement;
+        model = glm::translate(model, glm::vec3(x, y, z));
+        // 2. 缩放：在 0.05 和 0.25f 之间缩放
+        float scale = static_cast<float>(rand() % 20) / 100.0f + 0.05f;
+        model = glm::scale(model, glm::vec3(scale));
+        // 3. 旋转：绕着一个（半）随机选择的旋转轴向量进行随机的旋转
+        float rotAngle = static_cast<float>(rand() % 360);
+        model = glm::rotate(model, rotAngle, glm::vec3(0.4f, 0.6f, 0.8f));
+        // 4. 添加到矩阵的数组中
+        modelMatrices.push_back(model);
+    }
+
     unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexcubeShader = glGetUniformBlockIndex(cubeShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexskyboxShader = glGetUniformBlockIndex(skyboxShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexcolorShader = glGetUniformBlockIndex(colorShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexnormalDisplayShader = glGetUniformBlockIndex(normalDisplayShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexinstancingShader = glGetUniformBlockIndex(instancingShader.ProgramID, "Matrices");
 
     glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
     glUniformBlockBinding(cubeShader.ProgramID, uniformBlockIndexcubeShader, 0);
     glUniformBlockBinding(skyboxShader.ProgramID, uniformBlockIndexskyboxShader, 0);
     glUniformBlockBinding(colorShader.ProgramID, uniformBlockIndexcolorShader, 0);
-    glUniformBlockBinding(normalDisplayShader.ProgramID, uniformBlockIndexnormalDisplayShader, 0);
-
-    // cube VAO
-    unsigned int cubeVAO, cubeVBO;
-    glGenVertexArrays(1, &cubeVAO);
-    glGenBuffers(1, &cubeVBO);
-    glBindVertexArray(cubeVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), &vertices, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-    glBindVertexArray(0);
+    glUniformBlockBinding(instancingShader.ProgramID, uniformBlockIndexinstancingShader, 0);
 
     // empty VAO
     unsigned int emptyVAO;
     glGenVertexArrays(1, &emptyVAO);
 
     // fbo
-    unsigned int fbo;
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    
+
     // texture
-    unsigned int texture;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
 
@@ -235,7 +253,6 @@ int main() {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
 
     // rbo
-    unsigned int rbo;
     glGenRenderbuffers(1, &rbo);
     glBindRenderbuffer(GL_RENDERBUFFER, rbo);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 800, 600);
@@ -268,6 +285,14 @@ int main() {
 
     glBindBufferRange(GL_UNIFORM_BUFFER, 0, uboMatrices, 0, 2 * sizeof(glm::mat4));
 
+    // buffer for instance matrices
+    unsigned int buffer;
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    glBufferData(GL_ARRAY_BUFFER, amount * sizeof(glm::mat4), modelMatrices.data(), GL_STATIC_DRAW);
+
+    rock.ConfigureInstancedArray(buffer);
+
     cubeShader.use();
     cubeShader.setInt("skybox", 0);
 
@@ -289,7 +314,11 @@ int main() {
         lastFrame = currentFrame;
 
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+
+        int winWidth, winHeight;
+        glfwGetFramebufferSize(window, &winWidth, &winHeight);
+
+        glViewport(0, 0, winWidth, winHeight);
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_DEPTH_TEST);
@@ -299,9 +328,7 @@ int main() {
         glm::mat4 model = glm::mat4(1.0f);
         ourShader.setMat4("model", model);
 
-        int winWidth, winHeight;
-        glfwGetFramebufferSize(window, &winWidth, &winHeight);
-        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)winWidth/(float)winHeight, 0.1f, 100.0f);
+        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)winWidth/(float)winHeight, 0.1f, 1000.0f);
         glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(glm::mat4), glm::value_ptr(projection));
 
@@ -309,39 +336,16 @@ int main() {
         glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
 
-        cubeShader.use();
-        glBindVertexArray(cubeVAO);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
-
-        cubeShader.setVec3("cameraPos", camera.Position);
-        model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(-1.0f, 0.0f, -1.0f));
-        glm::mat3 NormalMatrix = glm::mat3(transpose(inverse(model)));
-        cubeShader.setMat3("NormalMatrix", NormalMatrix);
-        cubeShader.setMat4("model", model);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-
-        glBindVertexArray(cubeVAO);
-
-        model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(2.0f, 0.0f, 0.0f));
-        NormalMatrix = glm::mat3(transpose(inverse(model)));
-        cubeShader.setMat3("NormalMatrix", NormalMatrix);
-        cubeShader.setMat4("model", model);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-
         colorShader.use();
-        colorShader.setFloat("time", static_cast<float>(glfwGetTime()));
-        model = glm::mat4(1.0f);
-        colorShader.setMat4("model", model);
-        backpack.Draw(colorShader);
 
-        normalDisplayShader.use();
         model = glm::mat4(1.0f);
-        normalDisplayShader.setMat4("model", model);
-        backpack.Draw(normalDisplayShader);
+        model = glm::translate(model, glm::vec3(0.0f, -3.0f, 0.0f));
+        model = glm::scale(model, glm::vec3(4.0f, 4.0f, 4.0f));
+        colorShader.setMat4("model", model);
+        planet.Draw(colorShader);
+
+        instancingShader.use();
+        rock.DrawInstanced(instancingShader, amount);
 
         skyboxShader.use();
         glBindVertexArray(skyboxVAO);
@@ -377,8 +381,6 @@ int main() {
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
-    glDeleteVertexArrays(1, &cubeVAO);
-    glDeleteBuffers(1, &cubeVBO);
     glDeleteRenderbuffers(1, &rbo);
     glDeleteFramebuffers(1, &fbo);
     glDeleteBuffers(1, &uboMatrices);
@@ -497,6 +499,19 @@ void processInput(GLFWwindow *window)
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {
     glViewport(0, 0, width, height);
+
+    if (width > 0 && height > 0)
+    {
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+        std::cout << "Window Resized: FBO Updated to " << width << "x" << height << std::endl;
+    }
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
