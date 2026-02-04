@@ -48,6 +48,9 @@ int windowedPosY = 0;
 int windowedWidth = 800;
 int windowedHeight = 600;
 
+bool blinn = false;
+bool blinnKeyPressed = false;
+
 glm::vec3 lightPos(1.2f, 1.0f, 2.0f);
 
 int main() {
@@ -81,9 +84,12 @@ int main() {
     Shader skyboxShader("../src/skybox.vs", "../src/skybox.fs");
     Shader colorShader("../src/color.vs", "../src/color.fs");
     Shader instancingShader("../src/instancing.vs", "../src/instancing.fs");
+    Shader lightShader("../src/light.vs", "../src/light.fs");
 
     Model planet("../extern/planet/planet.obj");
     Model rock("../extern/rock/rock.obj");
+
+    loadTexture wood("../src/wood.png");
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -228,17 +234,30 @@ int main() {
         modelMatrices.push_back(model);
     }
 
+        float woodVertices[] = {
+        // positions            // normals         // texcoords
+        10.0f, -0.5f,  10.0f,  0.0f, 1.0f, 0.0f,  10.0f,  0.0f,
+        -10.0f, -0.5f,  10.0f,  0.0f, 1.0f, 0.0f,   0.0f,  0.0f,
+        -10.0f, -0.5f, -10.0f,  0.0f, 1.0f, 0.0f,   0.0f, 10.0f,
+
+        10.0f, -0.5f,  10.0f,  0.0f, 1.0f, 0.0f,  10.0f,  0.0f,
+        -10.0f, -0.5f, -10.0f,  0.0f, 1.0f, 0.0f,   0.0f, 10.0f,
+        10.0f, -0.5f, -10.0f,  0.0f, 1.0f, 0.0f,  10.0f, 10.0f
+    };
+
     unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexcubeShader = glGetUniformBlockIndex(cubeShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexskyboxShader = glGetUniformBlockIndex(skyboxShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexcolorShader = glGetUniformBlockIndex(colorShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexinstancingShader = glGetUniformBlockIndex(instancingShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexlightShader = glGetUniformBlockIndex(lightShader.ProgramID, "Matrices");
 
     glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
     glUniformBlockBinding(cubeShader.ProgramID, uniformBlockIndexcubeShader, 0);
     glUniformBlockBinding(skyboxShader.ProgramID, uniformBlockIndexskyboxShader, 0);
     glUniformBlockBinding(colorShader.ProgramID, uniformBlockIndexcolorShader, 0);
     glUniformBlockBinding(instancingShader.ProgramID, uniformBlockIndexinstancingShader, 0);
+    glUniformBlockBinding(lightShader.ProgramID, uniformBlockIndexlightShader, 0);
 
     // cube VAO
     unsigned int cubeVAO, cubeVBO;
@@ -327,6 +346,21 @@ int main() {
 
     rock.ConfigureInstancedArray(buffer);
 
+    // wood VAO
+    unsigned int woodVAO, woodVBO;
+    glGenVertexArrays(1, &woodVAO);
+    glGenBuffers(1, &woodVBO);
+    glBindVertexArray(woodVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, woodVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(woodVertices), woodVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glBindVertexArray(0);
+
     cubeShader.use();
     cubeShader.setInt("skybox", 0);
 
@@ -335,6 +369,29 @@ int main() {
 
     skyboxShader.use();
     skyboxShader.setInt("skybox", 0);
+
+        // lighting info
+    // -------------
+    std::vector<glm::vec3> lightPositions = {
+        glm::vec3(-3.0f, 0.0f, 0.0f),
+        glm::vec3(-1.0f, 0.0f, 0.0f),
+        glm::vec3 (1.0f, 0.0f, 0.0f),
+        glm::vec3 (3.0f, 0.0f, 0.0f)
+    };
+    std::vector<glm::vec3> lightColors = {
+        glm::vec3(0.25),
+        glm::vec3(0.50),
+        glm::vec3(0.75),
+        glm::vec3(1.00)
+    };
+
+    lightShader.use();
+    lightShader.setInt("woodTexture", 0);
+
+    glm::vec3 lightPos(0.0f, 0.0f, 0.0f);
+    lightShader.setVec3("lightPos", lightPos);
+    lightShader.setVec3s("lightPositions", lightPositions);
+    lightShader.setVec3s("lightColors", lightColors);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
@@ -353,7 +410,7 @@ int main() {
         glfwGetFramebufferSize(window, &winWidth, &winHeight);
 
         glViewport(0, 0, winWidth, winHeight);
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClearColor(0.01f, 0.01f, 0.01f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_DEPTH_TEST);
 
@@ -370,48 +427,17 @@ int main() {
         glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
 
-        cubeShader.use();
-        glBindVertexArray(cubeVAO);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
-
-        cubeShader.setVec3("cameraPos", camera.Position);
+        lightShader.use();
+        lightShader.setVec3("viewPos", camera.Position);
+        lightShader.setBool("blinn", blinn); 
         model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(-1.0f, 0.0f, -1.0f));
+        lightShader.setMat4("model", model);
         glm::mat3 NormalMatrix = glm::mat3(transpose(inverse(model)));
-        cubeShader.setMat3("NormalMatrix", NormalMatrix);
-        cubeShader.setMat4("model", model);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+        lightShader.setMat3("NormalMatrix", NormalMatrix);
 
-        glBindVertexArray(cubeVAO);
-
-        model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(2.0f, 0.0f, 0.0f));
-        NormalMatrix = glm::mat3(transpose(inverse(model)));
-        cubeShader.setMat3("NormalMatrix", NormalMatrix);
-        cubeShader.setMat4("model", model);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-
-        colorShader.use();
-
-        model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(0.0f, -3.0f, 0.0f));
-        model = glm::scale(model, glm::vec3(4.0f, 4.0f, 4.0f));
-        colorShader.setMat4("model", model);
-        planet.Draw(colorShader);
-
-        instancingShader.use();
-        rock.DrawInstanced(instancingShader, amount);
-
-        skyboxShader.use();
-        glBindVertexArray(skyboxVAO);
-        glDepthMask(GL_FALSE);
-        glDepthFunc(GL_LEQUAL);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+        glBindVertexArray(woodVAO);
+        wood.bind(0);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
 
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
@@ -546,7 +572,7 @@ void processInput(GLFWwindow *window)
             f11Pressed = false;
         }
 
-        if (isMouseCaptured)
+    if (isMouseCaptured)
     {
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
             camera.ProcessKeyboard(FORWARD, deltaTime);
@@ -556,6 +582,16 @@ void processInput(GLFWwindow *window)
             camera.ProcessKeyboard(LEFT, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
             camera.ProcessKeyboard(RIGHT, deltaTime);
+    }
+
+    if (glfwGetKey(window, GLFW_KEY_B) == GLFW_PRESS && !blinnKeyPressed) 
+    {
+        blinn = !blinn;
+        blinnKeyPressed = true;
+    }
+    if (glfwGetKey(window, GLFW_KEY_B) == GLFW_RELEASE) 
+    {
+        blinnKeyPressed = false;
     }
 }
 

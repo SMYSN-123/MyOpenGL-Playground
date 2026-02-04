@@ -150,6 +150,11 @@ class Shader
         glUniform3fv(glGetUniformLocation(ProgramID, name.c_str()), 1, &value[0]); 
     }
 
+    void setVec3s(const std::string &name, const std::vector<glm::vec3> &values) const
+    {
+        glUniform3fv(glGetUniformLocation(ProgramID, name.c_str()), static_cast<GLsizei>(values.size()), &values[0][0]); 
+    }
+
     private:
     void checkCompileErrors(unsigned int shader, std::string type)
     {

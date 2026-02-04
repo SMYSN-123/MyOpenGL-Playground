@@ -56,5 +56,7 @@ void main()
     // float average = 0.2126 * col.r + 0.7152 * col.g + 0.0722 * col.b;
     // col = vec3(average);
 
+    col = pow(col, vec3(1.0 / 2.2)); // Gamma correction
+
     FragColor = vec4(col, 1.0);
 }
