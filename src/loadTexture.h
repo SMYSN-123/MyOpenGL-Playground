@@ -11,20 +11,32 @@ public:
     int width, height, nrChannels;
 
     // 构造函数
-    loadTexture(const char* path) {
+    loadTexture(const char* path, bool isSRGB = false, GLint wrapMode = GL_REPEAT) {
         glGenTextures(1, &ID);
 
         // 图像加载设置：翻转Y轴
-        stbi_set_flip_vertically_on_load(true);
+        // stbi_set_flip_vertically_on_load(true);
         // 加载图片数据 (CPU端)
         unsigned char* data = stbi_load(path, &width, &height, &nrChannels, 0);
 
         if (data) {
-            // 根据通道数判断格式
-            GLenum format;
-            if (nrChannels == 1) format = GL_RED;       // .jpg 黑白图
-            else if (nrChannels == 3) format = GL_RGB;  // .jpg 彩色图
-            else if (nrChannels == 4) format = GL_RGBA; // .png 透明图
+            GLenum internalFormat; // 显卡内部存什么格式 (关键!)
+            GLenum dataFormat;     // 传入的数据是什么格式
+
+            if (nrChannels == 1) {
+                internalFormat = dataFormat = GL_RED;
+            }
+            else if (nrChannels == 3) {
+                // 如果是 sRGB 图片，显卡内部用 GL_SRGB 存储 (自动线性化)
+                // 否则用普通的 GL_RGB
+                internalFormat = isSRGB ? GL_SRGB : GL_RGB;
+                dataFormat = GL_RGB;
+            }
+            else if (nrChannels == 4) {
+                internalFormat = isSRGB ? GL_SRGB_ALPHA : GL_RGBA;
+                dataFormat = GL_RGBA;
+            }
+
 
             glBindTexture(GL_TEXTURE_2D, ID);
 
@@ -34,20 +46,20 @@ public:
 
             // 发送数据到 GPU (最核心步骤)
             // 目标 | Mipmap层级 | 显卡存储格式 | 宽 | 高 | 历史遗留0 | 源数据格式 | 数据类型 | 数据指针
-            glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+            glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, dataFormat, GL_UNSIGNED_BYTE, data);
 
             // 自动生成多级渐远纹理
             glGenerateMipmap(GL_TEXTURE_2D);
 
             // 设置纹理参数 (环绕和过滤)
             // 环绕方式: 重复
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapMode);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapMode);
             // 过滤方式: 线性插值 (平滑)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-            std::cout << "[Texture] Loaded successfully: " << path << std::endl;
+            std::cout << "[Texture] Loaded successfully: " << path << (isSRGB ? " (sRGB)" : " (Linear)") << std::endl;
         }
         else {
             std::cout << "[Texture] Failed to load texture: " << path << std::endl;

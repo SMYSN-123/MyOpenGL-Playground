@@ -64,8 +64,11 @@ public:
         glBindVertexArray(0);
     }
 
-        void DrawInstanced(Shader& shader, unsigned int amount)
+    // 同时，你还需要一个支持实例化的绘制函数
+    void DrawInstanced(Shader& shader, unsigned int amount)
     {
+        // 绑定纹理部分 (直接复制 Draw 函数里的纹理绑定代码过来)
+        // ... (省略纹理绑定代码，和 Draw 一模一样) ...
         unsigned int diffuseNr = 1;
         unsigned int specularNr = 1;
         unsigned int reflectionNr = 1;
@@ -85,17 +88,22 @@ public:
 
         // 绘制
         glBindVertexArray(VAO);
+        // ✅ 关键：使用 Instanced 版本
         glDrawElementsInstanced(GL_TRIANGLES, static_cast<unsigned int>(indices.size()), GL_UNSIGNED_INT, 0, amount);
         glBindVertexArray(0);
     }
 
+    // 专门为这个 Mesh 配置实例化矩阵属性 (Location 3, 4, 5, 6)
     void SetupInstancedAttributes(unsigned int instanceVBO)
     {
         glBindVertexArray(VAO);
         glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
 
+        // mat4 占用 4 个 vec4 插槽
         size_t vec4Size = sizeof(glm::vec4);
 
+        // ✅ 关键修复：显式将其转换为 GLsizei (32位)，消除“可能丢失数据”的警告
+        // 因为我们知道 stride (64字节) 肯定放得进 32位整数里
         GLsizei stride = static_cast<GLsizei>(4 * vec4Size);
 
         // Loc 3

@@ -155,6 +155,11 @@ class Shader
         glUniform3fv(glGetUniformLocation(ProgramID, name.c_str()), static_cast<GLsizei>(values.size()), &values[0][0]); 
     }
 
+    void setMat4s(std::string name, const std::vector<glm::mat4> &matrices) const
+    {
+        glUniformMatrix4fv(glGetUniformLocation(ProgramID, name.c_str()), static_cast<GLsizei>(matrices.size()), GL_FALSE, (const GLfloat*)matrices.data());
+    }
+
     private:
     void checkCompileErrors(unsigned int shader, std::string type)
     {
