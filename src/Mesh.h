@@ -10,6 +10,8 @@ struct Vertex
     glm::vec3 Position;
     glm::vec3 Normal;
     glm::vec2 TexCoords;
+    glm::vec3 Tangent;   // ✅ 新增：切线
+    glm::vec3 Bitangent; // ✅ 新增：副切线
 };
 
 struct Texture
@@ -93,7 +95,7 @@ public:
         glBindVertexArray(0);
     }
 
-    // 专门为这个 Mesh 配置实例化矩阵属性 (Location 3, 4, 5, 6)
+    // 专门为这个 Mesh 配置实例化矩阵属性 (Location 5, 6, 7, 8)
     void SetupInstancedAttributes(unsigned int instanceVBO)
     {
         glBindVertexArray(VAO);
@@ -106,24 +108,24 @@ public:
         // 因为我们知道 stride (64字节) 肯定放得进 32位整数里
         GLsizei stride = static_cast<GLsizei>(4 * vec4Size);
 
-        // Loc 3
-        glEnableVertexAttribArray(3); 
-        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)0);
-        // Loc 4
-        glEnableVertexAttribArray(4); 
-        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, stride, (void*)(1 * vec4Size));
         // Loc 5
         glEnableVertexAttribArray(5); 
-        glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride, (void*)(2 * vec4Size));
+        glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride, (void*)0);
         // Loc 6
         glEnableVertexAttribArray(6); 
-        glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride, (void*)(3 * vec4Size));
+        glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride, (void*)(1 * vec4Size));
+        // Loc 7
+        glEnableVertexAttribArray(7); 
+        glVertexAttribPointer(7, 4, GL_FLOAT, GL_FALSE, stride, (void*)(2 * vec4Size));
+        // Loc 8
+        glEnableVertexAttribArray(8); 
+        glVertexAttribPointer(8, 4, GL_FLOAT, GL_FALSE, stride, (void*)(3 * vec4Size));
 
         // 设置除数 (实例化关键)
-        glVertexAttribDivisor(3, 1);
-        glVertexAttribDivisor(4, 1);
-        glVertexAttribDivisor(5, 1);    
+        glVertexAttribDivisor(5, 1);
         glVertexAttribDivisor(6, 1);
+        glVertexAttribDivisor(7, 1);    
+        glVertexAttribDivisor(8, 1);
 
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -153,6 +155,13 @@ private:
 
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
         glEnableVertexAttribArray(2);
+
+        // ✅ 3: 切线 (Tangent)
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Tangent));
+        glEnableVertexAttribArray(3);
+        // ✅ 4: 副切线 (Bitangent)
+        glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Bitangent));
+        glEnableVertexAttribArray(4);
 
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);

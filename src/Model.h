@@ -48,7 +48,7 @@ private:
     void loadModel(const std::string& path)
     {
         Assimp::Importer import;
-        const aiScene* scene = import.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs);
+        const aiScene* scene = import.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_CalcTangentSpace);
 
         if(!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
         {
@@ -107,6 +107,27 @@ private:
                 vertex.TexCoords = glm::vec2(0.0f, 0.0f);
             }
 
+            // ✅ 修改点 5：提取切线和副切线
+            // 这里我们做个判断，防止有些极其简陋的模型（比如没有纹理坐标）无法生成切线
+            if (mesh->HasTangentsAndBitangents())
+            {
+                // Tangent
+                vector.x = mesh->mTangents[i].x;
+                vector.y = mesh->mTangents[i].y;
+                vector.z = mesh->mTangents[i].z;
+                vertex.Tangent = vector;
+                // Bitangent
+                vector.x = mesh->mBitangents[i].x;
+                vector.y = mesh->mBitangents[i].y;
+                vector.z = mesh->mBitangents[i].z;
+                vertex.Bitangent = vector;
+            }
+            else
+            {
+                vertex.Tangent = glm::vec3(0.0f);
+                vertex.Bitangent = glm::vec3(0.0f);
+            }
+
             vertices.push_back(vertex);
         }
 
@@ -131,6 +152,13 @@ private:
             // 3. // 尝试加载 Ambient
             std::vector<Texture> reflectionMaps = loadMaterialTextures(material, aiTextureType_AMBIENT, "texture_reflection");
             textures.insert(textures.end(), std::make_move_iterator(reflectionMaps.begin()), std::make_move_iterator(reflectionMaps.end()));
+            // ✅ 修改点 6：加载法线贴图
+            // .obj 文件通常把法线贴图存在 HEIGHT 属性里，所以我们两个都查一下
+            std::vector<Texture> normalMaps = loadMaterialTextures(material, aiTextureType_NORMALS, "texture_normal");
+            textures.insert(textures.end(), normalMaps.begin(), normalMaps.end());
+            
+            std::vector<Texture> heightMaps = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal");
+            textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
         }
 
         return Mesh(vertices, indices, textures);

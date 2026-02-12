@@ -22,7 +22,7 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void renderCube();
 void renderScreenQuad();
-void renderScene(const Shader& shader, const loadTexture& wood, const loadTexture& box);
+void renderScene(const Shader& shader, const Shader& normalMappingShader, const loadTexture& wood, const loadTexture& box, const loadTexture& brickwall, const loadTexture& brickwallNormalMap);
 
 unsigned int SCR_WIDTH = 800;
 unsigned int SCR_HEIGHT = 600;
@@ -37,6 +37,9 @@ unsigned int intermediateFBO;
 unsigned int screenTexture;                  // 普通纹理
 
 unsigned int floorVAO;
+
+unsigned int normalMapVAO;
+unsigned int normalMapVBO;
 
 Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
 
@@ -107,9 +110,12 @@ int main() {
     Shader depthShader("../src/depth.vs", "../src/depth.fs", "../src/depth.gs");
     Shader shadowShader("../src/point_shadows_depth.vs", "../src/point_shadows_depth.fs");
     Shader debugDepthShader("../src/screen.vs", "../src/debugDepth.fs");
+    Shader normalMappingShader("../src/normal_mapping.vs", "../src/normal_mapping.fs");
 
     loadTexture wood("../src/wood.png", true);
     loadTexture box("../src/container.jpg", true);
+    loadTexture brickwall("../src/brickwall.jpg", true);
+    loadTexture brickwallNormal("../src/brickwall_normal.jpg", false);
 
     glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
@@ -138,6 +144,7 @@ int main() {
     unsigned int uniformBlockIndexinstancingShader = glGetUniformBlockIndex(instancingShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexlightShader = glGetUniformBlockIndex(lightShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexshadowShader = glGetUniformBlockIndex(shadowShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexnormalMappingShader = glGetUniformBlockIndex(normalMappingShader.ProgramID, "Matrices");
 
     glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
     glUniformBlockBinding(cubeShader.ProgramID, uniformBlockIndexcubeShader, 0);
@@ -146,6 +153,7 @@ int main() {
     glUniformBlockBinding(instancingShader.ProgramID, uniformBlockIndexinstancingShader, 0);
     glUniformBlockBinding(lightShader.ProgramID, uniformBlockIndexlightShader, 0);
     glUniformBlockBinding(shadowShader.ProgramID, uniformBlockIndexshadowShader, 0);
+    glUniformBlockBinding(normalMappingShader.ProgramID, uniformBlockIndexnormalMappingShader, 0);
 
     // MSAA Framebuffer
     glGenFramebuffers(1, &msaaFBO);
@@ -244,6 +252,11 @@ int main() {
     shadowShader.setInt("diffuseTexture", 0);
     shadowShader.setInt("depthMap", 1);
 
+    normalMappingShader.use();
+    normalMappingShader.setInt("diffuseTexture", 0);
+    normalMappingShader.setInt("depthMap", 1);
+    normalMappingShader.setInt("normalMap", 2);
+
     screenShader.use();
     screenShader.setInt("screenTexture", 0);
 
@@ -283,7 +296,7 @@ int main() {
         depthShader.setFloat("far_plane", far_plane);
         depthShader.setVec3("lightPos", lightPos);
 
-        renderScene(depthShader, wood, box);
+        renderScene(depthShader, depthShader, wood, box, brickwall, brickwallNormal);
 
         glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
 
@@ -310,17 +323,33 @@ int main() {
         model = glm::mat4(1.0f);
         glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
 
+        float time = static_cast<float>(glfwGetTime());
+        lightPos.x = sin(time) * 3.0f;
+        lightPos.z = cos(time) * 3.0f; // 让光围着原点转圈
+        lightPos.y = 1.0f;
+
         shadowShader.setVec3("viewPos", camera.Position);
         shadowShader.setVec3("lightPos", lightPos);
-        shadowShader.setMat4("model", model);
         shadowShader.setBool("blinn", blinn);
         shadowShader.setMat3("NormalMatrix", NormalMatrix);
         shadowShader.setFloat("far_plane", far_plane);
 
+        normalMappingShader.use();
+        normalMappingShader.setVec3("viewPos", camera.Position);
+        normalMappingShader.setVec3("lightPos", lightPos);
+        normalMappingShader.setBool("blinn", blinn);
+        normalMappingShader.setMat3("NormalMatrix", NormalMatrix);
+        normalMappingShader.setFloat("far_plane", far_plane);
+
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
 
-        renderScene(shadowShader, wood, box);
+        renderScene(shadowShader, normalMappingShader, wood, box, brickwall, brickwallNormal);
+
+        // // instancingShader.use();
+        // // rock.DrawInstanced(instancingShader, amount);
+
+        // // mySky.Draw(view, projection);
 
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
@@ -607,8 +636,100 @@ void renderScreenQuad()
     glBindVertexArray(0);
 }
 
-void renderScene(const Shader& shader, const loadTexture& wood, const loadTexture& box)
+void renderNormalMappedQuad()
 {
+    if (normalMapVAO == 0)
+    {
+        // positions
+        glm::vec3 pos1(-1.0, 1.0, 0.0);
+        glm::vec3 pos2(-1.0, -1.0, 0.0);
+        glm::vec3 pos3(1.0, -1.0, 0.0);
+        glm::vec3 pos4(1.0, 1.0, 0.0);
+        // texture coordinates
+        glm::vec2 uv1(0.0, 1.0);
+        glm::vec2 uv2(0.0, 0.0);
+        glm::vec2 uv3(1.0, 0.0);
+        glm::vec2 uv4(1.0, 1.0);
+        // normal vector
+        glm::vec3 nm(0.0, 0.0, 1.0);
+
+        // calculate tangent/bitangent vectors of both triangles
+        glm::vec3 tangent1, bitangent1;
+        glm::vec3 tangent2, bitangent2;
+        // - triangle 1
+        glm::vec3 edge1 = pos2 - pos1;
+        glm::vec3 edge2 = pos3 - pos1;
+        glm::vec2 deltaUV1 = uv2 - uv1;
+        glm::vec2 deltaUV2 = uv3 - uv1;
+
+        GLfloat f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+
+        tangent1.x = f * (deltaUV2.y * edge1.x - deltaUV1.y * edge2.x);
+        tangent1.y = f * (deltaUV2.y * edge1.y - deltaUV1.y * edge2.y);
+        tangent1.z = f * (deltaUV2.y * edge1.z - deltaUV1.y * edge2.z);
+        tangent1 = glm::normalize(tangent1);
+
+        bitangent1.x = f * (-deltaUV2.x * edge1.x + deltaUV1.x * edge2.x);
+        bitangent1.y = f * (-deltaUV2.x * edge1.y + deltaUV1.x * edge2.y);
+        bitangent1.z = f * (-deltaUV2.x * edge1.z + deltaUV1.x * edge2.z);
+        bitangent1 = glm::normalize(bitangent1);
+
+        // - triangle 2
+        edge1 = pos3 - pos1;
+        edge2 = pos4 - pos1;
+        deltaUV1 = uv3 - uv1;
+        deltaUV2 = uv4 - uv1;
+
+        f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+
+        tangent2.x = f * (deltaUV2.y * edge1.x - deltaUV1.y * edge2.x);
+        tangent2.y = f * (deltaUV2.y * edge1.y - deltaUV1.y * edge2.y);
+        tangent2.z = f * (deltaUV2.y * edge1.z - deltaUV1.y * edge2.z);
+        tangent2 = glm::normalize(tangent2);
+
+
+        bitangent2.x = f * (-deltaUV2.x * edge1.x + deltaUV1.x * edge2.x);
+        bitangent2.y = f * (-deltaUV2.x * edge1.y + deltaUV1.x * edge2.y);
+        bitangent2.z = f * (-deltaUV2.x * edge1.z + deltaUV1.x * edge2.z);
+        bitangent2 = glm::normalize(bitangent2);
+
+
+        GLfloat quadVertices[] = {
+            // Positions            // normal         // TexCoords  // Tangent                          // Bitangent
+            pos1.x, pos1.y, pos1.z, nm.x, nm.y, nm.z, uv1.x, uv1.y, tangent1.x, tangent1.y, tangent1.z, bitangent1.x, bitangent1.y, bitangent1.z,
+            pos2.x, pos2.y, pos2.z, nm.x, nm.y, nm.z, uv2.x, uv2.y, tangent1.x, tangent1.y, tangent1.z, bitangent1.x, bitangent1.y, bitangent1.z,
+            pos3.x, pos3.y, pos3.z, nm.x, nm.y, nm.z, uv3.x, uv3.y, tangent1.x, tangent1.y, tangent1.z, bitangent1.x, bitangent1.y, bitangent1.z,
+
+            pos1.x, pos1.y, pos1.z, nm.x, nm.y, nm.z, uv1.x, uv1.y, tangent2.x, tangent2.y, tangent2.z, bitangent2.x, bitangent2.y, bitangent2.z,
+            pos3.x, pos3.y, pos3.z, nm.x, nm.y, nm.z, uv3.x, uv3.y, tangent2.x, tangent2.y, tangent2.z, bitangent2.x, bitangent2.y, bitangent2.z,
+            pos4.x, pos4.y, pos4.z, nm.x, nm.y, nm.z, uv4.x, uv4.y, tangent2.x, tangent2.y, tangent2.z, bitangent2.x, bitangent2.y, bitangent2.z
+        };
+        // Setup plane VAO
+        glGenVertexArrays(1, &normalMapVAO);
+        glGenBuffers(1, &normalMapVBO);
+        glBindVertexArray(normalMapVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, normalMapVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(GLfloat), (GLvoid*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(GLfloat), (GLvoid*)(3 * sizeof(GLfloat)));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 14 * sizeof(GLfloat), (GLvoid*)(6 * sizeof(GLfloat)));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(GLfloat), (GLvoid*)(8 * sizeof(GLfloat)));
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(GLfloat), (GLvoid*)(11 * sizeof(GLfloat)));
+    }
+    glBindVertexArray(normalMapVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+}
+
+
+void renderScene(const Shader& shader, const Shader& normalMappingShader, const loadTexture& wood, const loadTexture& box, const loadTexture& brickwall, const loadTexture& brickwallNormalMap)
+{
+    shader.use();
     // floor
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::scale(model, glm::vec3(10.0));
@@ -643,4 +764,13 @@ void renderScene(const Shader& shader, const loadTexture& wood, const loadTextur
     model = glm::scale(model, glm::vec3(1.5));
     shader.setMat4("model", model);
     renderCube();
+    // wall
+    normalMappingShader.use();
+    brickwall.bind(0);
+    brickwallNormalMap.bind(2);
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, glm::vec3(2.0f, 0.0f, -2.0f));
+    // model = glm::rotate(model, (GLfloat)glfwGetTime() * -10, glm::normalize(glm::vec3(1.0, 0.0, 1.0)));
+    normalMappingShader.setMat4("model", model);
+    renderNormalMappedQuad();
 }
