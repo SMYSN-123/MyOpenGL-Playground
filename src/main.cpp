@@ -22,7 +22,7 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void renderCube();
 void renderScreenQuad();
-void renderScene(const Shader& shader, const Shader& normalMappingShader, const loadTexture& wood, const loadTexture& box, const loadTexture& brickwall, const loadTexture& brickwallNormalMap);
+void renderScene(const Shader& shader, const Shader& normalMappingShader, const Shader& parallaxMappingShader, const loadTexture& wood, const loadTexture& box, const loadTexture& brickwall, const loadTexture& brickwallNormalMap, const loadTexture& brickwall2, const loadTexture& brickwall2Normal, const loadTexture& brickwall2Disp);
 
 unsigned int SCR_WIDTH = 800;
 unsigned int SCR_HEIGHT = 600;
@@ -111,11 +111,17 @@ int main() {
     Shader shadowShader("../src/point_shadows_depth.vs", "../src/point_shadows_depth.fs");
     Shader debugDepthShader("../src/screen.vs", "../src/debugDepth.fs");
     Shader normalMappingShader("../src/normal_mapping.vs", "../src/normal_mapping.fs");
+    Shader parallaxMappingShader("../src/parallax_mapping.vs", "../src/parallax_mapping.fs");
 
     loadTexture wood("../src/wood.png", true);
     loadTexture box("../src/container.jpg", true);
+
     loadTexture brickwall("../src/brickwall.jpg", true);
     loadTexture brickwallNormal("../src/brickwall_normal.jpg", false);
+
+    loadTexture brickwall2("../src/bricks2.jpg", true);
+    loadTexture brickwall2Normal("../src/bricks2_normal.jpg", false);
+    loadTexture brickwall2Disp("../src/bricks2_disp.jpg", false);
 
     glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
@@ -145,6 +151,7 @@ int main() {
     unsigned int uniformBlockIndexlightShader = glGetUniformBlockIndex(lightShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexshadowShader = glGetUniformBlockIndex(shadowShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexnormalMappingShader = glGetUniformBlockIndex(normalMappingShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexparallaxMappingShader = glGetUniformBlockIndex(parallaxMappingShader.ProgramID, "Matrices");
 
     glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
     glUniformBlockBinding(cubeShader.ProgramID, uniformBlockIndexcubeShader, 0);
@@ -154,6 +161,7 @@ int main() {
     glUniformBlockBinding(lightShader.ProgramID, uniformBlockIndexlightShader, 0);
     glUniformBlockBinding(shadowShader.ProgramID, uniformBlockIndexshadowShader, 0);
     glUniformBlockBinding(normalMappingShader.ProgramID, uniformBlockIndexnormalMappingShader, 0);
+    glUniformBlockBinding(parallaxMappingShader.ProgramID, uniformBlockIndexparallaxMappingShader, 0);
 
     // MSAA Framebuffer
     glGenFramebuffers(1, &msaaFBO);
@@ -257,6 +265,12 @@ int main() {
     normalMappingShader.setInt("depthMap", 1);
     normalMappingShader.setInt("normalMap", 2);
 
+    parallaxMappingShader.use();
+    parallaxMappingShader.setInt("diffuseTexture", 0);
+    parallaxMappingShader.setInt("shadowMap", 1);
+    parallaxMappingShader.setInt("normalMap", 2);
+    parallaxMappingShader.setInt("depthMap", 3);
+
     screenShader.use();
     screenShader.setInt("screenTexture", 0);
 
@@ -296,7 +310,7 @@ int main() {
         depthShader.setFloat("far_plane", far_plane);
         depthShader.setVec3("lightPos", lightPos);
 
-        renderScene(depthShader, depthShader, wood, box, brickwall, brickwallNormal);
+        renderScene(depthShader, depthShader, depthShader, wood, box, brickwall, brickwallNormal, brickwall2, brickwall2Normal, brickwall2Disp);
 
         glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
 
@@ -341,15 +355,18 @@ int main() {
         normalMappingShader.setMat3("NormalMatrix", NormalMatrix);
         normalMappingShader.setFloat("far_plane", far_plane);
 
+        parallaxMappingShader.use();
+        parallaxMappingShader.setVec3("viewPos", camera.Position);
+        parallaxMappingShader.setVec3("lightPos", lightPos);
+        parallaxMappingShader.setBool("blinn", blinn);
+        parallaxMappingShader.setMat3("NormalMatrix", NormalMatrix);
+        parallaxMappingShader.setFloat("far_plane", far_plane);
+        parallaxMappingShader.setFloat("height_scale", 0.1f);
+
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
 
-        renderScene(shadowShader, normalMappingShader, wood, box, brickwall, brickwallNormal);
-
-        // // instancingShader.use();
-        // // rock.DrawInstanced(instancingShader, amount);
-
-        // // mySky.Draw(view, projection);
+        renderScene(shadowShader, normalMappingShader, parallaxMappingShader, wood, box, brickwall, brickwallNormal, brickwall2, brickwall2Normal, brickwall2Disp);
 
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
@@ -727,7 +744,7 @@ void renderNormalMappedQuad()
 }
 
 
-void renderScene(const Shader& shader, const Shader& normalMappingShader, const loadTexture& wood, const loadTexture& box, const loadTexture& brickwall, const loadTexture& brickwallNormalMap)
+void renderScene(const Shader& shader, const Shader& normalMappingShader, const Shader& parallaxMappingShader, const loadTexture& wood, const loadTexture& box, const loadTexture& brickwall, const loadTexture& brickwallNormalMap, const loadTexture& brickwall2, const loadTexture& brickwall2Normal, const loadTexture& brickwall2Disp)
 {
     shader.use();
     // floor
@@ -772,5 +789,14 @@ void renderScene(const Shader& shader, const Shader& normalMappingShader, const 
     model = glm::translate(model, glm::vec3(2.0f, 0.0f, -2.0f));
     // model = glm::rotate(model, (GLfloat)glfwGetTime() * -10, glm::normalize(glm::vec3(1.0, 0.0, 1.0)));
     normalMappingShader.setMat4("model", model);
+    renderNormalMappedQuad();
+    // wall 2
+    parallaxMappingShader.use();
+    brickwall2.bind(0);
+    brickwall2Normal.bind(2);
+    brickwall2Disp.bind(3);
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, glm::vec3(-2.0f, 0.0f, -2.0f));
+    parallaxMappingShader.setMat4("model", model);
     renderNormalMappedQuad();
 }
