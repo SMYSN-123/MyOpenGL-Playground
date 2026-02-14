@@ -3,10 +3,26 @@ out vec4 FragColor;
 
 in vec2 TexCoords;
 
-uniform sampler2D screenTexture;
-
 uniform float offset_x;
 uniform float offset_y;
+
+uniform sampler2D screenTexture;
+uniform sampler2D bloomBlur;
+
+uniform float exposure;
+
+uniform bool bloom;
+
+// ACES 色调映射算法
+vec3 ACESFilm(vec3 x)
+{
+    float a = 2.51f;
+    float b = 0.03f;
+    float c = 2.43f;
+    float d = 0.59f;
+    float e = 0.14f;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+}
 
 void main()
 {
@@ -22,30 +38,11 @@ void main()
         vec2(offset_x, -offset_y)
     );
 
-    // float kernel[9] = float[](
-    //     -1, -1, -1,
-    //     -1, 9, -1,
-    //     -1, -1, -1
-    // );
-
-//     float kernel[9] = float[](
-//     1.0 / 16, 2.0 / 16, 1.0 / 16,
-//     2.0 / 16, 4.0 / 16, 2.0 / 16,
-//     1.0 / 16, 2.0 / 16, 1.0 / 16  
-// );
-
-    // float kernel[9] = float[](
-    //     1, 1, 1,
-    //     1, -8, 1,
-    //     1, 1, 1
-    // );
-
     float kernel[9] = float[](
         0, -1, 0,
         -1, 5, -1,
         0, -1, 0
     );
-
 
     vec3 col = vec3(0.0);
     for(int i = 0; i < 9; i++)
@@ -55,6 +52,17 @@ void main()
 
     // float average = 0.2126 * col.r + 0.7152 * col.g + 0.0722 * col.b;
     // col = vec3(average);
+
+    // --- 🔥 叠加泛光 (Bloom) 🔥 ---
+    // 在 Tone Mapping 之前叠加
+    if(bloom)
+    {
+        vec3 bloomColor = texture(bloomBlur, TexCoords).rgb;
+        col += bloomColor;
+    }
+
+    col *= exposure; // 曝光调整
+    col = ACESFilm(col); // ACES 色调映射
 
     col = pow(col, vec3(1.0 / 2.2)); // Gamma correction
 

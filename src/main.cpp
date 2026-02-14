@@ -29,12 +29,17 @@ unsigned int SCR_HEIGHT = 600;
 
 // MSAA FBO: 用于渲染 3D 场景 (抗锯齿)
 unsigned int msaaFBO;
-unsigned int textureColorBufferMultiSampled; // MSAA 纹理
+// unsigned int textureColorBufferMultiSampled; // MSAA 纹理
+unsigned int textureColorBufferMultiSampled[2]; // MSAA 纹理数组 (0:场景, 1:亮部)
 unsigned int rboMultiSampled;                // MSAA 深度缓冲
 
 // Intermediate FBO: 用于接收 MSAA 还原后的普通图像 (做后处理)
 unsigned int intermediateFBO;
-unsigned int screenTexture;                  // 普通纹理
+// unsigned int screenTexture;                  // 普通纹理
+unsigned int screenTexture[2];                  // 普通纹理数组 (0:场景, 1:亮部)
+
+unsigned int pingpongFBO[2];
+unsigned int pingpongTexture[2];
 
 unsigned int floorVAO;
 
@@ -64,7 +69,12 @@ bool blinnKeyPressed = false;
 bool showDebugDepth = false;
 bool showDebugDepthKeyPressed = false;
 
+bool bloom = true;
+bool bloomKeyPressed = false;
+
 glm::vec3 lightPos(0.0f, 0.0f, 0.0f);
+
+glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 15.0f);
 
 int main() {
 
@@ -112,6 +122,8 @@ int main() {
     Shader debugDepthShader("../src/screen.vs", "../src/debugDepth.fs");
     Shader normalMappingShader("../src/normal_mapping.vs", "../src/normal_mapping.fs");
     Shader parallaxMappingShader("../src/parallax_mapping.vs", "../src/parallax_mapping.fs");
+    Shader shiner("../src/shiner.vs", "../src/shiner.fs");
+    Shader gaussianBlurShader("../src/gaussian_blur.vs", "../src/gaussian_blur.fs");
 
     loadTexture wood("../src/wood.png", true);
     loadTexture box("../src/container.jpg", true);
@@ -152,6 +164,7 @@ int main() {
     unsigned int uniformBlockIndexshadowShader = glGetUniformBlockIndex(shadowShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexnormalMappingShader = glGetUniformBlockIndex(normalMappingShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexparallaxMappingShader = glGetUniformBlockIndex(parallaxMappingShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexshinerShader = glGetUniformBlockIndex(shiner.ProgramID, "Matrices");
 
     glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
     glUniformBlockBinding(cubeShader.ProgramID, uniformBlockIndexcubeShader, 0);
@@ -162,19 +175,22 @@ int main() {
     glUniformBlockBinding(shadowShader.ProgramID, uniformBlockIndexshadowShader, 0);
     glUniformBlockBinding(normalMappingShader.ProgramID, uniformBlockIndexnormalMappingShader, 0);
     glUniformBlockBinding(parallaxMappingShader.ProgramID, uniformBlockIndexparallaxMappingShader, 0);
+    glUniformBlockBinding(shiner.ProgramID, uniformBlockIndexshinerShader, 0);
 
     // MSAA Framebuffer
     glGenFramebuffers(1, &msaaFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
 
     // texture
-    glGenTextures(1, &textureColorBufferMultiSampled);
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled);
+    glGenTextures(2, textureColorBufferMultiSampled);
+    for(unsigned int i = 0; i < 2; i++)
+    {
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled[i]);
+        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, GL_TRUE);
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);    
 
-    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGB, SCR_WIDTH, SCR_HEIGHT, GL_TRUE);
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);    
-
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled[i], 0);
+    }
 
     // rbo
     glGenRenderbuffers(1, &rboMultiSampled);
@@ -184,6 +200,9 @@ int main() {
 
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rboMultiSampled);
 
+    unsigned int attachments[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    glDrawBuffers(2, attachments);
+
     if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         std::cout << "ERROR::FRAMEBUFFER:: MSAA Framebuffer is not complete!" << std::endl;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -192,16 +211,19 @@ int main() {
     glGenFramebuffers(1, &intermediateFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, intermediateFBO);
 
-    glGenTextures(1, &screenTexture);
-    glBindTexture(GL_TEXTURE_2D, screenTexture);
+    glGenTextures(2, screenTexture);
+    for(unsigned int i = 0; i < 2; i++)
+    {
+        glBindTexture(GL_TEXTURE_2D, screenTexture[i]);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, screenTexture, 0);
-    
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, screenTexture[i], 0);
+    }
+
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         std::cout << "ERROR::FRAMEBUFFER:: Intermediate Framebuffer is not complete!" << std::endl;
 
@@ -214,20 +236,13 @@ int main() {
 
     glBindBufferRange(GL_UNIFORM_BUFFER, 0, uboMatrices, 0, 2 * sizeof(glm::mat4));
 
-    // wood VAO
-    unsigned int floorVBO;
-    glGenVertexArrays(1, &floorVAO);
-    glGenBuffers(1, &floorVBO);
-    glBindVertexArray(floorVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, floorVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(woodVertices), woodVertices, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-    glBindVertexArray(0);
+    // // buffer for instance matrices
+    // unsigned int buffer;
+    // glGenBuffers(1, &buffer);
+    // glBindBuffer(GL_ARRAY_BUFFER, buffer);
+    // glBufferData(GL_ARRAY_BUFFER, amount * sizeof(glm::mat4), modelMatrices.data(), GL_STATIC_DRAW);
+
+    // rock.ConfigureInstancedArray(buffer);
 
     // depthMap FBO
     unsigned int depthMapFBO;
@@ -254,15 +269,32 @@ int main() {
     glReadBuffer(GL_NONE);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    // pingpong render
+    glGenFramebuffers(2, pingpongFBO);
+    glGenTextures(2, pingpongTexture);
+    for(unsigned int i = 0; i < 2; i++)
+    {
+        glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[i]);
+        glBindTexture(GL_TEXTURE_2D, pingpongTexture[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pingpongTexture[i], 0);
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
     depthShader.use();
 
     shadowShader.use();
     shadowShader.setInt("diffuseTexture", 0);
-    shadowShader.setInt("depthMap", 1);
+    shadowShader.setInt("shadowMap", 1);
 
     normalMappingShader.use();
     normalMappingShader.setInt("diffuseTexture", 0);
-    normalMappingShader.setInt("depthMap", 1);
+    normalMappingShader.setInt("shadowMap", 1);
     normalMappingShader.setInt("normalMap", 2);
 
     parallaxMappingShader.use();
@@ -273,6 +305,7 @@ int main() {
 
     screenShader.use();
     screenShader.setInt("screenTexture", 0);
+    screenShader.setInt("bloomBlur", 1);
 
     glBindVertexArray(0);
 
@@ -337,16 +370,17 @@ int main() {
         model = glm::mat4(1.0f);
         glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
 
-        float time = static_cast<float>(glfwGetTime());
-        lightPos.x = sin(time) * 3.0f;
-        lightPos.z = cos(time) * 3.0f; // 让光围着原点转圈
-        lightPos.y = 1.0f;
+        // float time = static_cast<float>(glfwGetTime());
+        // lightPos.x = sin(time) * 3.0f;
+        // lightPos.z = cos(time) * 3.0f; // 让光围着原点转圈
+        // lightPos.y = 1.0f;
 
         shadowShader.setVec3("viewPos", camera.Position);
         shadowShader.setVec3("lightPos", lightPos);
         shadowShader.setBool("blinn", blinn);
         shadowShader.setMat3("NormalMatrix", NormalMatrix);
         shadowShader.setFloat("far_plane", far_plane);
+        shadowShader.setVec3("lightColor", lightColor);
 
         normalMappingShader.use();
         normalMappingShader.setVec3("viewPos", camera.Position);
@@ -354,6 +388,7 @@ int main() {
         normalMappingShader.setBool("blinn", blinn);
         normalMappingShader.setMat3("NormalMatrix", NormalMatrix);
         normalMappingShader.setFloat("far_plane", far_plane);
+        normalMappingShader.setVec3("lightColor", lightColor);
 
         parallaxMappingShader.use();
         parallaxMappingShader.setVec3("viewPos", camera.Position);
@@ -362,21 +397,67 @@ int main() {
         parallaxMappingShader.setMat3("NormalMatrix", NormalMatrix);
         parallaxMappingShader.setFloat("far_plane", far_plane);
         parallaxMappingShader.setFloat("height_scale", 0.1f);
+        parallaxMappingShader.setVec3("lightColor", lightColor);
 
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
 
         renderScene(shadowShader, normalMappingShader, parallaxMappingShader, wood, box, brickwall, brickwallNormal, brickwall2, brickwall2Normal, brickwall2Disp);
 
+        shiner.use();
+
+        model = glm::mat4(1.0f);
+        model = glm::translate(model, lightPos);
+        model = glm::scale(model, glm::vec3(0.1f));
+        shiner.setMat4("model", model);
+        shiner.setVec3("lightColor", lightColor);
+        renderCube();
+
+        // // instancingShader.use();
+        // // rock.DrawInstanced(instancingShader, amount);
+
+        // // mySky.Draw(view, projection);
+
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
 
+        // 绑定读(MSAA) 和 写(中间)
         glBindFramebuffer(GL_READ_FRAMEBUFFER, msaaFBO);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, intermediateFBO);
-        glBlitFramebuffer(0 ,0 , SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
+        // --- 第一搬：搬运正常场景 ---
+        glReadBuffer(GL_COLOR_ATTACHMENT0); // 从 MSAA 的 0 号读
+        glDrawBuffer(GL_COLOR_ATTACHMENT0); // 往 Intermediate 的 0 号写
+        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+        // --- 第二搬：搬运亮部区域 ---
+        glReadBuffer(GL_COLOR_ATTACHMENT1); // 从 MSAA 的 1 号读
+        glDrawBuffer(GL_COLOR_ATTACHMENT1); // 往 Intermediate 的 1 号写
+        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+        // 解绑 MSAA FBO，因为我们现在要处理的是 intermediateFBO 里的纹理
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        
+
+        // 高斯模糊处理
+        bool horizontal = true;
+        bool first_iteration = true;
+        unsigned int amount = 10;
+        gaussianBlurShader.use();
+        for(unsigned int i = 0; i < amount; i++)
+        {
+            glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[horizontal]);
+            gaussianBlurShader.setBool("horizontal", horizontal);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, first_iteration ? screenTexture[1] : pingpongTexture[!horizontal]);
+            renderScreenQuad();
+            horizontal = !horizontal;
+            if(first_iteration)
+                first_iteration = false;
+        }
+
+        // 恢复默认状态
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
         glDisable(GL_DEPTH_TEST);
         glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -388,19 +469,26 @@ int main() {
             debugDepthShader.use();
             debugDepthShader.setFloat("near_plane", 1.0f); // 必须和投影矩阵一致
             debugDepthShader.setFloat("far_plane", 25.0f);  // 必须和投影矩阵一致
-            
+
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap); // 绑定深度图
-        } 
+        }
         else {
             // --- 🎨 正常模式 ---
             screenShader.use();
             screenShader.setFloat("offset_x", 1.0f / SCR_WIDTH);
             screenShader.setFloat("offset_y", 1.0f / SCR_HEIGHT);
-            
+
+            screenShader.setFloat("exposure", 1.0f);
+
+            screenShader.setBool("bloom", bloom);
+
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, screenTexture); // 绑定颜色图
+            glBindTexture(GL_TEXTURE_2D, screenTexture[0]); // 场景
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, pingpongTexture[!horizontal]); // 泛光
         }
+
         renderScreenQuad();
 
         glEnable(GL_DEPTH_TEST);
@@ -413,8 +501,7 @@ int main() {
     glDeleteRenderbuffers(1, &rboMultiSampled);
     glDeleteFramebuffers(1, &msaaFBO);
     glDeleteFramebuffers(1, &intermediateFBO);
-    glDeleteTextures(1, &screenTexture);
-    
+
     glfwTerminate();
 
     return 0;
@@ -511,6 +598,16 @@ void processInput(GLFWwindow *window)
     {
         showDebugDepthKeyPressed = false;
     }
+
+    if (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS && !bloomKeyPressed) 
+    {
+        bloom = !bloom;
+        bloomKeyPressed = true;
+    }
+    if (glfwGetKey(window, GLFW_KEY_V) == GLFW_RELEASE) 
+    {
+        bloomKeyPressed = false;
+    }
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)
@@ -525,21 +622,32 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
     if (width > 0 && height > 0)
     {
         // 1. Resize Intermediate FBO (普通纹理)
-        glBindTexture(GL_TEXTURE_2D, screenTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
         // 2. Resize MSAA FBO (多重采样纹理 + RBO)
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled);
-        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGB, width, height, GL_TRUE);
+        for(unsigned int i = 0; i < 2; i++)
+        {
+            glBindTexture(GL_TEXTURE_2D, screenTexture[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+
+            glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled[i]);
+            glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGB16F, width, height, GL_TRUE);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
 
         glBindRenderbuffer(GL_RENDERBUFFER, rboMultiSampled);
         glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH24_STENCIL8, width, height);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
+        // 3. ✅ 新增：Resize 乒乓缓冲 (Bloom 模糊专用)
+        for (unsigned int i = 0; i < 2; i++)
+        {
+            glBindTexture(GL_TEXTURE_2D, pingpongTexture[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, NULL);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+
         // 打印一下日志，让你知道它在工作
-        std::cout << "Window Resized: FBO Updated to " << width << "x" << height << std::endl;
+        std::cout << "Window Resized: All FBOs (MSAA, Screen, PingPong) Updated to " << width << "x" << height << std::endl;
     }
 }
 
