@@ -15,6 +15,7 @@
 #include <gtc/matrix_transform.hpp>
 #include <gtc/type_ptr.hpp>
 
+// 1. 这里写窗口大小改变的回调函数 (framebuffer_size_callback)
 unsigned int loadCubemap(std::vector<std::string> faces);
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow *window);
@@ -22,7 +23,34 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void renderCube();
 void renderScreenQuad();
-void renderScene(const Shader& shader, const Shader& normalMappingShader, const Shader& parallaxMappingShader, const loadTexture& wood, const loadTexture& box, const loadTexture& brickwall, const loadTexture& brickwallNormalMap, const loadTexture& brickwall2, const loadTexture& brickwall2Normal, const loadTexture& brickwall2Disp);
+std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& projview);
+std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);
+std::vector<glm::mat4> getLightSpaceMatrices();
+
+class PBRMaterial;
+
+class PBRMaterial
+{
+public:
+    PBRMaterial(loadTexture& diff, loadTexture& nor, loadTexture& disp, loadTexture& rough, loadTexture& ao) : my_diff(diff), my_nor(nor), my_disp(disp), my_rough(rough), my_ao(ao) {}
+
+    void bind(const Shader& shader) const
+    {
+        my_diff.bind(0);
+        my_nor.bind(1);
+        my_disp.bind(2);
+        my_rough.bind(3);
+        my_ao.bind(4);
+    }
+private:
+    loadTexture& my_diff;
+    loadTexture& my_nor;
+    loadTexture& my_disp;
+    loadTexture& my_rough;
+    loadTexture& my_ao;
+};
+
+void renderScene(const Shader &shader, const PBRMaterial& floorMat, const PBRMaterial& boxMat, const PBRMaterial& pillarMat, const PBRMaterial& megalithMat);
 
 unsigned int SCR_WIDTH = 800;
 unsigned int SCR_HEIGHT = 600;
@@ -72,9 +100,17 @@ bool showDebugDepthKeyPressed = false;
 bool bloom = true;
 bool bloomKeyPressed = false;
 
-glm::vec3 lightPos(0.0f, 0.0f, 0.0f);
+const unsigned int SHADOW_WIDTH = 4096;
+const unsigned int SHADOW_HEIGHT = 4096;
 
-glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 15.0f);
+const float cameraNearPlane = 0.1f;
+const float cameraFarPlane = 500.0f;
+
+std::vector<float> shadowCascadeLevels{cameraFarPlane / 25.0f, cameraFarPlane / 10.0f, cameraFarPlane / 2.0f, cameraFarPlane / 1.0f};
+
+const glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 1.0f);
+
+const glm::vec3 lightDir = glm::normalize(glm::vec3(20.0f, 50.0f, 20.0f));
 
 int main() {
 
@@ -111,29 +147,45 @@ int main() {
     FPSCounter fpsCounter;
 
     Shader ourShader("../src/shader.vs", "../src/shader.fs");
-    Shader cubeShader("../src/cube.vs", "../src/cube.fs");
     Shader screenShader("../src/screen.vs", "../src/screen.fs");
-    Shader skyboxShader("../src/skybox.vs", "../src/skybox.fs");
-    Shader colorShader("../src/color.vs", "../src/color.fs");
-    Shader instancingShader("../src/instancing.vs", "../src/instancing.fs");
-    Shader lightShader("../src/light.vs", "../src/light.fs");
-    Shader depthShader("../src/depth.vs", "../src/depth.fs", "../src/depth.gs");
-    Shader shadowShader("../src/point_shadows_depth.vs", "../src/point_shadows_depth.fs");
     Shader debugDepthShader("../src/screen.vs", "../src/debugDepth.fs");
-    Shader normalMappingShader("../src/normal_mapping.vs", "../src/normal_mapping.fs");
-    Shader parallaxMappingShader("../src/parallax_mapping.vs", "../src/parallax_mapping.fs");
     Shader shiner("../src/shiner.vs", "../src/shiner.fs");
     Shader gaussianBlurShader("../src/gaussian_blur.vs", "../src/gaussian_blur.fs");
+    Shader csmShadowDepthShader("../src/csm_shadows_depth.vs", "../src/csm_shadows_depth.fs", "../src/csm_shadows_depth.gs");
+    Shader csmShadowShader("../src/csm_shadows.vs", "../src/csm_shadows.fs");
 
-    loadTexture wood("../src/wood.png", true);
-    loadTexture box("../src/container.jpg", true);
+    // floor
+    loadTexture floor_ao("../extern/floor/cobblestone_floor_09_ao_2k.png", false);
+    loadTexture floor_diff("../extern/floor/cobblestone_floor_09_diff_2k.jpg", true);
+    loadTexture floor_disp("../extern/floor/cobblestone_floor_09_disp_2k.png", false);
+    loadTexture floor_nor_gl("../extern/floor/cobblestone_floor_09_nor_gl_2k.png", false);
+    loadTexture floor_rough("../extern/floor/cobblestone_floor_09_rough_2k.png", false);
 
-    loadTexture brickwall("../src/brickwall.jpg", true);
-    loadTexture brickwallNormal("../src/brickwall_normal.jpg", false);
+    // box
+    loadTexture box_ao("../extern/box/plywood_ao_2k.png", false);
+    loadTexture box_diff("../extern/box/plywood_diff_2k.jpg", true);
+    loadTexture box_disp("../extern/box/plywood_disp_2k.png", false);
+    loadTexture box_nor_gl("../extern/box/plywood_nor_gl_2k.png", false);
+    loadTexture box_rough("../extern/box/plywood_rough_2k.png", false);
 
-    loadTexture brickwall2("../src/bricks2.jpg", true);
-    loadTexture brickwall2Normal("../src/bricks2_normal.jpg", false);
-    loadTexture brickwall2Disp("../src/bricks2_disp.jpg", false);
+    // pillar
+    loadTexture pillar_ao("../extern/pillar/concrete_wall_006_ao_2k.png", false);
+    loadTexture pillar_diff("../extern/pillar/concrete_wall_006_diff_2k.jpg", true);
+    loadTexture pillar_disp("../extern/pillar/concrete_wall_006_disp_2k.png", false);
+    loadTexture pillar_nor_gl("../extern/pillar/concrete_wall_006_nor_gl_2k.png", false);
+    loadTexture pillar_rough("../extern/pillar/concrete_wall_006_rough_2k.png", false);
+
+    // megalith
+    loadTexture megalith_ao("../extern/megalith/rock_face_03_ao_2k.png", false);
+    loadTexture megalith_diff("../extern/megalith/rock_face_03_diff_2k.jpg", true);
+    loadTexture megalith_disp("../extern/megalith/rock_face_03_disp_2k.png", false);
+    loadTexture megalith_nor_gl("../extern/megalith/rock_face_03_nor_gl_2k.png", false);
+    loadTexture megalith_rough("../extern/megalith/rock_face_03_rough_2k.png", false);
+
+    PBRMaterial floorMat = {floor_diff, floor_nor_gl, floor_disp, floor_rough, floor_ao};
+    PBRMaterial boxMat = {box_diff, box_nor_gl, box_disp, box_rough, box_ao};
+    PBRMaterial pillarMat = {pillar_diff, pillar_nor_gl, pillar_disp, pillar_rough, pillar_ao};
+    PBRMaterial megalithMat = {megalith_diff, megalith_nor_gl, megalith_disp, megalith_rough, megalith_ao};
 
     glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
@@ -143,39 +195,73 @@ int main() {
     glEnable(GL_MULTISAMPLE);
 
     glDisable(GL_CULL_FACE);
+    // glEnable(GL_CULL_FACE);
+    // glCullFace(GL_BACK);
+    // glFrontFace(GL_CCW);
 
-    float woodVertices[] = {
-        // positions            // normals         // texcoords
-        25.0f, -0.5f,  25.0f,  0.0f, 1.0f, 0.0f,  25.0f,  0.0f,
-        -25.0f, -0.5f,  25.0f,  0.0f, 1.0f, 0.0f,   0.0f,  0.0f,
-        -25.0f, -0.5f, -25.0f,  0.0f, 1.0f, 0.0f,   0.0f, 25.0f,
+    float floorVertices[] = {
+    // Pos                  // Normal           // Tex          // Tangent (需要重新算，暂时沿用)
+    // --- 三角形 1 (逆时针修正) ---
+    // 原来是 V1, V2, V3 (顺时针) -> 改为 V1, V3, V2 (逆时针)
+     100.0f, -2.0f,  100.0f,  0.0f, 1.0f, 0.0f,  100.0f,   0.0f,   1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f, // 右下
+    -100.0f, -2.0f, -100.0f,  0.0f, 1.0f, 0.0f,    0.0f, 100.0f,   1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f, // 左上
+    -100.0f, -2.0f,  100.0f,  0.0f, 1.0f, 0.0f,    0.0f,   0.0f,   1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f, // 左下
 
-        25.0f, -0.5f,  25.0f,  0.0f, 1.0f, 0.0f,  25.0f,  0.0f,
-        -25.0f, -0.5f, -25.0f,  0.0f, 1.0f, 0.0f,   0.0f, 25.0f,
-        25.0f, -0.5f, -25.0f,  0.0f, 1.0f, 0.0f,  25.0f, 25.0f
-    };
+    // --- 三角形 2 (逆时针修正) ---
+    // 原来是 V4, V5, V6 (顺时针) -> 改为 V4, V6, V5 (逆时针)
+     100.0f, -2.0f,  100.0f,  0.0f, 1.0f, 0.0f,  100.0f,   0.0f,   1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f, // 右下
+     100.0f, -2.0f, -100.0f,  0.0f, 1.0f, 0.0f,  100.0f, 100.0f,   1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f, // 右上
+    -100.0f, -2.0f, -100.0f,  0.0f, 1.0f, 0.0f,    0.0f, 100.0f,   1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f  // 左上
+};
+
+    // 更新 VAO 设置 (Stride 改为 14 * sizeof(float))
+    unsigned int floorVBO;
+    glGenVertexArrays(1, &floorVAO);
+    glGenBuffers(1, &floorVBO);
+    glBindVertexArray(floorVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, floorVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(floorVertices), floorVertices, GL_STATIC_DRAW);
+
+    // layout 0: Pos
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)0);
+
+    // layout 1: Normal
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(3 * sizeof(float)));
+
+    // layout 2: TexCoords
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(6 * sizeof(float)));
+
+    // layout 3: Tangent
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(8 * sizeof(float)));
+
+    // layout 4: Bitangent
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(11 * sizeof(float)));
+
+    glBindVertexArray(0);
+
+    // // 1. 初始化
+    // std::vector<std::string> faces = SkyboxHelper::GetFacesInOrder("../extern/skybox");
+    // // 创建对象 (自动加载纹理、编译Shader、配置VAO)
+    // Skybox mySky(faces);
 
     unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexcubeShader = glGetUniformBlockIndex(cubeShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexskyboxShader = glGetUniformBlockIndex(skyboxShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexcolorShader = glGetUniformBlockIndex(colorShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexinstancingShader = glGetUniformBlockIndex(instancingShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexlightShader = glGetUniformBlockIndex(lightShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexshadowShader = glGetUniformBlockIndex(shadowShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexnormalMappingShader = glGetUniformBlockIndex(normalMappingShader.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexparallaxMappingShader = glGetUniformBlockIndex(parallaxMappingShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexshinerShader = glGetUniformBlockIndex(shiner.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexcsmShadowShader_matrices = glGetUniformBlockIndex(csmShadowShader.ProgramID, "Matrices");
+
+    unsigned int uniformBlockIndexcsmShadowDepthShader = glGetUniformBlockIndex(csmShadowDepthShader.ProgramID, "LightSpaceMatrices");
+    unsigned int uniformBlockIndexcsmShadowShader_light = glGetUniformBlockIndex(csmShadowShader.ProgramID, "LightSpaceMatrices");
 
     glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
-    glUniformBlockBinding(cubeShader.ProgramID, uniformBlockIndexcubeShader, 0);
-    glUniformBlockBinding(skyboxShader.ProgramID, uniformBlockIndexskyboxShader, 0);
-    glUniformBlockBinding(colorShader.ProgramID, uniformBlockIndexcolorShader, 0);
-    glUniformBlockBinding(instancingShader.ProgramID, uniformBlockIndexinstancingShader, 0);
-    glUniformBlockBinding(lightShader.ProgramID, uniformBlockIndexlightShader, 0);
-    glUniformBlockBinding(shadowShader.ProgramID, uniformBlockIndexshadowShader, 0);
-    glUniformBlockBinding(normalMappingShader.ProgramID, uniformBlockIndexnormalMappingShader, 0);
-    glUniformBlockBinding(parallaxMappingShader.ProgramID, uniformBlockIndexparallaxMappingShader, 0);
     glUniformBlockBinding(shiner.ProgramID, uniformBlockIndexshinerShader, 0);
+    glUniformBlockBinding(csmShadowShader.ProgramID, uniformBlockIndexcsmShadowShader_matrices, 0);
+
+    glUniformBlockBinding(csmShadowDepthShader.ProgramID, uniformBlockIndexcsmShadowDepthShader, 1);
+    glUniformBlockBinding(csmShadowShader.ProgramID, uniformBlockIndexcsmShadowShader_light, 1);
 
     // MSAA Framebuffer
     glGenFramebuffers(1, &msaaFBO);
@@ -236,37 +322,44 @@ int main() {
 
     glBindBufferRange(GL_UNIFORM_BUFFER, 0, uboMatrices, 0, 2 * sizeof(glm::mat4));
 
-    // // buffer for instance matrices
-    // unsigned int buffer;
-    // glGenBuffers(1, &buffer);
-    // glBindBuffer(GL_ARRAY_BUFFER, buffer);
-    // glBufferData(GL_ARRAY_BUFFER, amount * sizeof(glm::mat4), modelMatrices.data(), GL_STATIC_DRAW);
+    //light ubo
+    unsigned int lightUboMatrices;
+    glGenBuffers(1, &lightUboMatrices);
+    glBindBuffer(GL_UNIFORM_BUFFER, lightUboMatrices);
+    glBufferData(GL_UNIFORM_BUFFER, 16 * sizeof(glm::mat4), nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    // rock.ConfigureInstancedArray(buffer);
+    glBindBufferRange(GL_UNIFORM_BUFFER, 1, lightUboMatrices, 0, 16 * sizeof(glm::mat4));
 
-    // depthMap FBO
-    unsigned int depthMapFBO;
-    glGenFramebuffers(1, &depthMapFBO);
+    // light FBO
+    unsigned int lightFBO;
+    glGenFramebuffers(1, &lightFBO);
 
-    const unsigned int SHADOW_WIDTH = 4096, SHADOW_HEIGHT = 4096;
+    unsigned int lightDepthMaps;
+    glGenTextures(1, &lightDepthMaps);
 
-    unsigned int depthCubemap;
-    glGenTextures(1, &depthCubemap);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
-    for(unsigned int i = 0; i < 6; i++)
-    {
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_DEPTH_COMPONENT, SHADOW_WIDTH, SHADOW_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
-    }
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT32F, SHADOW_WIDTH, SHADOW_HEIGHT, static_cast<int>(shadowCascadeLevels.size()) + 1, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
-    glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, depthCubemap, 0);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+
+    constexpr float bordercolor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, bordercolor);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, lightFBO);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, lightDepthMaps, 0);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
+
+    int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE)
+    {
+        std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!";
+        throw 0;
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // pingpong render
@@ -286,22 +379,15 @@ int main() {
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    depthShader.use();
+    csmShadowDepthShader.use();
 
-    shadowShader.use();
-    shadowShader.setInt("diffuseTexture", 0);
-    shadowShader.setInt("shadowMap", 1);
-
-    normalMappingShader.use();
-    normalMappingShader.setInt("diffuseTexture", 0);
-    normalMappingShader.setInt("shadowMap", 1);
-    normalMappingShader.setInt("normalMap", 2);
-
-    parallaxMappingShader.use();
-    parallaxMappingShader.setInt("diffuseTexture", 0);
-    parallaxMappingShader.setInt("shadowMap", 1);
-    parallaxMappingShader.setInt("normalMap", 2);
-    parallaxMappingShader.setInt("depthMap", 3);
+    csmShadowShader.use();
+    csmShadowShader.setInt("diffuseTexture", 0);
+    csmShadowShader.setInt("normalMap", 1);
+    csmShadowShader.setInt("depthMap", 2);
+    csmShadowShader.setInt("roughnessMap", 3);
+    csmShadowShader.setInt("aoMap", 4);
+    csmShadowShader.setInt("shadowMap", 10);
 
     screenShader.use();
     screenShader.setInt("screenTexture", 0);
@@ -318,32 +404,30 @@ int main() {
 
         processInput(window);
 
-        glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
-        glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
-
         glClearColor(0.01f, 0.01f, 0.01f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_DEPTH_TEST);
 
-        depthShader.use();
+        const auto lightMatrices = getLightSpaceMatrices();
+        glBindBuffer(GL_UNIFORM_BUFFER, lightUboMatrices);
+        for(size_t i = 0; i < lightMatrices.size(); i++)
+        {
+            glBufferSubData(GL_UNIFORM_BUFFER, i * sizeof(glm::mat4), sizeof(glm::mat4), lightMatrices.data());
+        }
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-        float near_plane = 1.0f, far_plane = 25.0f;
-        glm::mat4 shadowProj = glm::perspective(glm::radians(90.0f), static_cast<float>(SHADOW_WIDTH) / static_cast<float>(SHADOW_HEIGHT), near_plane, far_plane);
-        
-        std::vector<glm::mat4> shadowTransforms;
-        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)));
-        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)));
-        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f)));
-        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f)));
-        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, -1.0f, 0.0f)));
-        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, -1.0f, 1e-5f)));
+        glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
+        glBindFramebuffer(GL_FRAMEBUFFER, lightFBO);
 
-        depthShader.setMat4s("shadowMatrices", shadowTransforms);
+        glClear(GL_DEPTH_BUFFER_BIT);
 
-        depthShader.setFloat("far_plane", far_plane);
-        depthShader.setVec3("lightPos", lightPos);
+        csmShadowDepthShader.use();
 
-        renderScene(depthShader, depthShader, depthShader, wood, box, brickwall, brickwallNormal, brickwall2, brickwall2Normal, brickwall2Disp);
+        // glCullFace(GL_FRONT);
+
+        renderScene(csmShadowDepthShader, floorMat, boxMat, pillarMat, megalithMat);
+
+        // glCullFace(GL_BACK);
 
         glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
 
@@ -357,7 +441,7 @@ int main() {
         glm::mat4 model = glm::mat4(1.0f);
         ourShader.setMat4("model", model);
 
-        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 1000.0f);
+        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 500.0f);
         glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(glm::mat4), glm::value_ptr(projection));
 
@@ -365,58 +449,39 @@ int main() {
         glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
 
-        shadowShader.use();
+        csmShadowShader.use();
 
         model = glm::mat4(1.0f);
-        glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
 
-        // float time = static_cast<float>(glfwGetTime());
-        // lightPos.x = sin(time) * 3.0f;
-        // lightPos.z = cos(time) * 3.0f; // 让光围着原点转圈
-        // lightPos.y = 1.0f;
+        csmShadowShader.use();
 
-        shadowShader.setVec3("viewPos", camera.Position);
-        shadowShader.setVec3("lightPos", lightPos);
-        shadowShader.setBool("blinn", blinn);
-        shadowShader.setMat3("NormalMatrix", NormalMatrix);
-        shadowShader.setFloat("far_plane", far_plane);
-        shadowShader.setVec3("lightColor", lightColor);
+        csmShadowShader.setVec3("viewPos", camera.Position);
+        csmShadowShader.setVec3("lightDir", lightDir);
+        csmShadowShader.setVec3("lightColor", lightColor);
 
-        normalMappingShader.use();
-        normalMappingShader.setVec3("viewPos", camera.Position);
-        normalMappingShader.setVec3("lightPos", lightPos);
-        normalMappingShader.setBool("blinn", blinn);
-        normalMappingShader.setMat3("NormalMatrix", NormalMatrix);
-        normalMappingShader.setFloat("far_plane", far_plane);
-        normalMappingShader.setVec3("lightColor", lightColor);
+        csmShadowShader.setBool("blinn", blinn);
+        csmShadowShader.setFloat("far_plane", cameraFarPlane);
+        csmShadowShader.setFloat("height_scale", 0.1f);
 
-        parallaxMappingShader.use();
-        parallaxMappingShader.setVec3("viewPos", camera.Position);
-        parallaxMappingShader.setVec3("lightPos", lightPos);
-        parallaxMappingShader.setBool("blinn", blinn);
-        parallaxMappingShader.setMat3("NormalMatrix", NormalMatrix);
-        parallaxMappingShader.setFloat("far_plane", far_plane);
-        parallaxMappingShader.setFloat("height_scale", 0.1f);
-        parallaxMappingShader.setVec3("lightColor", lightColor);
+        csmShadowShader.setInt("cascadeCount", static_cast<int>(shadowCascadeLevels.size()));
+        for (size_t i = 0; i < shadowCascadeLevels.size(); ++i)
+        {
+            csmShadowShader.setFloat("cascadePlaneDistances[" + std::to_string(i) + "]", shadowCascadeLevels[i]);
+        }
 
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
+        glActiveTexture(GL_TEXTURE10);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps);
 
-        renderScene(shadowShader, normalMappingShader, parallaxMappingShader, wood, box, brickwall, brickwallNormal, brickwall2, brickwall2Normal, brickwall2Disp);
+        renderScene(csmShadowShader, floorMat, boxMat, pillarMat, megalithMat);
 
-        shiner.use();
+        // shiner.use();
 
-        model = glm::mat4(1.0f);
-        model = glm::translate(model, lightPos);
-        model = glm::scale(model, glm::vec3(0.1f));
-        shiner.setMat4("model", model);
-        shiner.setVec3("lightColor", lightColor);
-        renderCube();
-
-        // // instancingShader.use();
-        // // rock.DrawInstanced(instancingShader, amount);
-
-        // // mySky.Draw(view, projection);
+        // model = glm::mat4(1.0f);
+        // model = glm::translate(model, lightPos);
+        // model = glm::scale(model, glm::vec3(0.1f));
+        // shiner.setMat4("model", model);
+        // shiner.setVec3("lightColor", lightColor);
+        // renderCube();
 
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
@@ -471,7 +536,7 @@ int main() {
             debugDepthShader.setFloat("far_plane", 25.0f);  // 必须和投影矩阵一致
 
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap); // 绑定深度图
+            glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps); // 绑定深度图
         }
         else {
             // --- 🎨 正常模式 ---
@@ -488,7 +553,7 @@ int main() {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, pingpongTexture[!horizontal]); // 泛光
         }
-
+        
         renderScreenQuad();
 
         glEnable(GL_DEPTH_TEST);
@@ -501,7 +566,7 @@ int main() {
     glDeleteRenderbuffers(1, &rboMultiSampled);
     glDeleteFramebuffers(1, &msaaFBO);
     glDeleteFramebuffers(1, &intermediateFBO);
-
+    
     glfwTerminate();
 
     return 0;
@@ -682,63 +747,77 @@ void renderCube()
     // initialize (if necessary)
     if (cubeVAO == 0)
     {
-        float vertices[] = {
+                float vertices[] = {
+            // Pos                  // Normal           // Tex      // Tangent           // Bitangent
             // Back face
-            -0.5f, -0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, // Bottom-left
-            0.5f, 0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 1.0f, 1.0f, // top-right
-            0.5f, -0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 1.0f, 0.0f, // bottom-right         
-            0.5f, 0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 1.0f, 1.0f,  // top-right
-            -0.5f, -0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f,  // bottom-left
-            -0.5f, 0.5f, -0.5f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f,// top-left
+            -1.0f, -1.0f, -1.0f,  0.0f,  0.0f, -1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, // bottom-left
+             1.0f,  1.0f, -1.0f,  0.0f,  0.0f, -1.0f, 1.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, // top-right
+             1.0f, -1.0f, -1.0f,  0.0f,  0.0f, -1.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, // bottom-right         
+             1.0f,  1.0f, -1.0f,  0.0f,  0.0f, -1.0f, 1.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, // top-right
+            -1.0f, -1.0f, -1.0f,  0.0f,  0.0f, -1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, // bottom-left
+            -1.0f,  1.0f, -1.0f,  0.0f,  0.0f, -1.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, // top-left
             // Front face
-            -0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, // bottom-left
-            0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f,  // bottom-right
-            0.5f, 0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // top-right
-            0.5f, 0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, // top-right
-            -0.5f, 0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,  // top-left
-            -0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,  // bottom-left
+            -1.0f, -1.0f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,
+             1.0f, -1.0f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,
+             1.0f,  1.0f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,
+             1.0f,  1.0f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,
+            -1.0f,  1.0f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,
+            -1.0f, -1.0f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,
             // Left face
-            -0.5f, 0.5f, 0.5f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f, // top-right
-            -0.5f, 0.5f, -0.5f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, // top-left
-            -0.5f, -0.5f, -0.5f, -1.0f, 0.0f, 0.0f, 0.0f, 1.0f,  // bottom-left
-            -0.5f, -0.5f, -0.5f, -1.0f, 0.0f, 0.0f, 0.0f, 1.0f, // bottom-left
-            -0.5f, -0.5f, 0.5f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f,  // bottom-right
-            -0.5f, 0.5f, 0.5f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f, // top-right
+            -1.0f,  1.0f,  1.0f, -1.0f,  0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,
+            -1.0f,  1.0f, -1.0f, -1.0f,  0.0f,  0.0f, 1.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,
+            -1.0f, -1.0f, -1.0f, -1.0f,  0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,
+            -1.0f, -1.0f, -1.0f, -1.0f,  0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,
+            -1.0f, -1.0f,  1.0f, -1.0f,  0.0f,  0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,
+            -1.0f,  1.0f,  1.0f, -1.0f,  0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,
             // Right face
-            0.5f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, // top-left
-            0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, // bottom-right
-            0.5f, 0.5f, -0.5f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, // top-right         
-            0.5f, -0.5f, -0.5f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f,  // bottom-right
-            0.5f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,  // top-left
-            0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, // bottom-left     
+             1.0f,  1.0f,  1.0f,  1.0f,  0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+             1.0f, -1.0f, -1.0f,  1.0f,  0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+             1.0f,  1.0f, -1.0f,  1.0f,  0.0f,  0.0f, 1.0f, 1.0f,  0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+             1.0f, -1.0f, -1.0f,  1.0f,  0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+             1.0f,  1.0f,  1.0f,  1.0f,  0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+             1.0f, -1.0f,  1.0f,  1.0f,  0.0f,  0.0f, 0.0f, 0.0f,  0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,
             // Bottom face
-            -0.5f, -0.5f, -0.5f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f, // top-right
-            0.5f, -0.5f, -0.5f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, // top-left
-            0.5f, -0.5f, 0.5f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,// bottom-left
-            0.5f, -0.5f, 0.5f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f, // bottom-left
-            -0.5f, -0.5f, 0.5f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, // bottom-right
-            -0.5f, -0.5f, -0.5f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f, // top-right
+            -1.0f, -1.0f, -1.0f,  0.0f, -1.0f,  0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+             1.0f, -1.0f, -1.0f,  0.0f, -1.0f,  0.0f, 1.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+             1.0f, -1.0f,  1.0f,  0.0f, -1.0f,  0.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+             1.0f, -1.0f,  1.0f,  0.0f, -1.0f,  0.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+            -1.0f, -1.0f,  1.0f,  0.0f, -1.0f,  0.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+            -1.0f, -1.0f, -1.0f,  0.0f, -1.0f,  0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
             // Top face
-            -0.5f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,// top-left
-            0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, // bottom-right
-            0.5f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, // top-right     
-            0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, // bottom-right
-            -0.5f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,// top-left
-            -0.5f, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f // bottom-left        
+            -1.0f,  1.0f, -1.0f,  0.0f,  1.0f,  0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, -1.0f,
+             1.0f,  1.0f , 1.0f,  0.0f,  1.0f,  0.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, -1.0f,
+             1.0f,  1.0f, -1.0f,  0.0f,  1.0f,  0.0f, 1.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, -1.0f,
+             1.0f,  1.0f,  1.0f,  0.0f,  1.0f,  0.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,  0.0f,  1.0f,  0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, -1.0f,
+            -1.0f,  1.0f,  1.0f,  0.0f,  1.0f,  0.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, -1.0f
         };
+
         glGenVertexArrays(1, &cubeVAO);
         glGenBuffers(1, &cubeVBO);
         // fill buffer
         glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
         glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+        
         // link vertex attributes
         glBindVertexArray(cubeVAO);
+        
+        // 1. Pos
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)0);
+        // 2. Normal
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(3 * sizeof(float)));
+        // 3. TexCoords
         glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(6 * sizeof(float)));
+        // 4. Tangent
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(8 * sizeof(float)));
+        // 5. Bitangent
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(11 * sizeof(float)));
+
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
     }
@@ -851,60 +930,202 @@ void renderNormalMappedQuad()
     glBindVertexArray(0);
 }
 
-
-void renderScene(const Shader& shader, const Shader& normalMappingShader, const Shader& parallaxMappingShader, const loadTexture& wood, const loadTexture& box, const loadTexture& brickwall, const loadTexture& brickwallNormalMap, const loadTexture& brickwall2, const loadTexture& brickwall2Normal, const loadTexture& brickwall2Disp)
+std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& projview)
 {
-    shader.use();
-    // floor
+    const auto inv = glm::inverse(projview);
+
+    std::vector<glm::vec4> frustumCorners;
+    for(unsigned int x = 0; x < 2; x++)
+    {
+        for(unsigned int y = 0; y < 2; y++)
+        {
+            for(unsigned int z = 0; z < 2; z++)
+            {
+                const glm::vec4 pt = inv * glm::vec4(2.0f * x - 1.0f, 2.0f * y - 1.0f, 2.0f * z - 1.0f, 1.0f);
+                frustumCorners.push_back(pt / pt.w);
+            }
+        }
+    }
+    return frustumCorners;
+}
+
+std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view)
+{
+    return getFrustumCornersWorldSpace(proj * view);
+}
+
+glm::mat4 getLightSpaceMatrix(const float& nearPlane, const float& farPlane)
+{
+    const auto projection = glm::perspective(glm::radians(camera.Zoom), static_cast<float>(SCR_WIDTH) / static_cast<float>(SCR_HEIGHT), nearPlane, farPlane);
+    const auto view = camera.GetViewMatrix();
+    const auto corners = getFrustumCornersWorldSpace(projection, view);
+
+    glm::vec3 center = glm::vec3(0.0f);
+    for(const auto& v : corners)
+    {
+        center += glm::vec3(v.x, v.y, v.z);
+    }
+    center /= static_cast<float>(corners.size());
+
+    const auto lightView = glm::lookAt(center + lightDir, center, glm::vec3(0.0f, 1.0f, 0.0f));
+
+    float minX = std::numeric_limits<float>::max();
+    float maxX = std::numeric_limits<float>::lowest();
+    float minY = std::numeric_limits<float>::max();
+    float maxY = std::numeric_limits<float>::lowest();
+    float minZ = std::numeric_limits<float>::max();
+    float maxZ = std::numeric_limits<float>::lowest();
+    for(const auto& v : corners)
+    {
+        const auto trf = lightView * v;
+        minX = std::min(minX, trf.x);
+        maxX = std::max(maxX, trf.x);
+        minY = std::min(minY, trf.y);
+        maxY = std::max(maxY, trf.y);
+        minZ = std::min(minZ, trf.z);
+        maxZ = std::max(maxZ, trf.z);
+    }
+
+    // constexpr float zMult = 10.0f;
+    // if(minZ < 0)
+    // {
+    //     minZ *= zMult;
+    // }
+    // else
+    // {
+    //     minZ /= zMult;
+    // }
+    // if(maxZ < 0)
+    // {
+    //     maxZ /= zMult;
+    // }
+    // else
+    // {
+    //     maxZ *= zMult;
+    // }
+
+    float zMargin = 100.0f;
+    minZ -= zMargin; 
+    maxZ += zMargin * 0.5f;
+
+    float sideMargin  = (maxX - minX) / 4096; 
+
+    minX = std::floor(minX / sideMargin) * sideMargin;
+    maxX = std::floor(maxX / sideMargin) * sideMargin;
+    minY = std::floor(minY / sideMargin) * sideMargin;
+    maxY = std::floor(maxY / sideMargin) * sideMargin;
+
+    const glm::mat4 lightProjection = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
+
+    return lightProjection * lightView;
+}
+
+std::vector<glm::mat4> getLightSpaceMatrices()
+{
+    std::vector<glm::mat4> ret;
+    for(size_t i = 0; i < shadowCascadeLevels.size() + 1; i++)
+    {
+        if(i == 0)
+        {
+            ret.push_back(getLightSpaceMatrix(cameraNearPlane, shadowCascadeLevels[i]));
+        }
+        else if(i < shadowCascadeLevels.size())
+        {
+            ret.push_back(getLightSpaceMatrix(shadowCascadeLevels[i - 1], shadowCascadeLevels[i]));
+        }
+        else
+        {
+            ret.push_back(getLightSpaceMatrix(shadowCascadeLevels[i - 1], cameraFarPlane));
+        }
+    }
+    return ret;
+}
+
+void renderScene(const Shader &shader, const PBRMaterial& floorMat, const PBRMaterial& boxMat, const PBRMaterial& pillarMat, const PBRMaterial& megalithMat)
+{
+    // 1. 地板 (Floor)
+    // 画一个巨大的地板，确保它足够长，能接住所有的影子
+    floorMat.bind(shader);
     glm::mat4 model = glm::mat4(1.0f);
-    model = glm::scale(model, glm::vec3(10.0));
     shader.setMat4("model", model);
-    shader.setInt("reverse_normals", 1); // 因为我们对地板进行了缩放，所以法线也被缩放了。为了修正这个问题，我们可以在着色器中反转法线。
-    // glBindVertexArray(floorVAO);
-    wood.bind(0);
-    renderCube();
-    shader.setInt("reverse_normals", 0); // 画完地板后，记得把它改回来，否则后面的物体也会受到影响
-    // cubes
-    box.bind(0);
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(4.0f, -3.5f, 0.0));
-    shader.setMat4("model", model);
-    renderCube();
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(2.0f, 3.0f, 1.0));
-    model = glm::scale(model, glm::vec3(1.5));
-    shader.setMat4("model", model);
-    renderCube();
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(-3.0f, -1.0f, 0.0));
-    shader.setMat4("model", model);
-    renderCube();
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(-1.5f, 1.0f, 1.5));
-    shader.setMat4("model", model);
-    renderCube();
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(-1.5f, 2.0f, -3.0));
-    model = glm::rotate(model, 60.0f, glm::normalize(glm::vec3(1.0, 0.0, 1.0)));
-    model = glm::scale(model, glm::vec3(1.5));
-    shader.setMat4("model", model);
-    renderCube();
-    // wall
-    normalMappingShader.use();
-    brickwall.bind(0);
-    brickwallNormalMap.bind(2);
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(2.0f, 0.0f, -2.0f));
-    // model = glm::rotate(model, (GLfloat)glfwGetTime() * -10, glm::normalize(glm::vec3(1.0, 0.0, 1.0)));
-    normalMappingShader.setMat4("model", model);
-    renderNormalMappedQuad();
-    // wall 2
-    parallaxMappingShader.use();
-    brickwall2.bind(0);
-    brickwall2Normal.bind(2);
-    brickwall2Disp.bind(3);
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(-2.0f, 0.0f, -2.0f));
-    parallaxMappingShader.setMat4("model", model);
-    renderNormalMappedQuad();
+    shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+
+    glBindVertexArray(floorVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    // 2. 箱子长廊 (The Crate Corridor)
+    // 这是一个确定性的循环，不再用随机数
+    // 我们沿着 Z 轴负方向（屏幕深处）铺设箱子
+    static std::vector<glm::mat4> boxMatrices;
+    static std::vector<glm::mat4> pillarMatrices;
+    static std::vector<glm::mat4> megalithMatrices;
+    
+    if (boxMatrices.empty())
+    {
+        // --- A. 近处细节区 (0 - 20米) ---
+        // 放一些小箱子，测试第 0 级级联的高清阴影
+        for (int i = 0; i < 5; ++i) 
+        {
+            glm::mat4 m = glm::mat4(1.0f);
+            // 左边一排
+            m = glm::translate(glm::mat4(1.0f), glm::vec3(-2.0f, 0.5f, -i * 4.0f)); 
+            m = glm::scale(m, glm::vec3(0.5f));
+            boxMatrices.push_back(m);
+
+            // 右边一排
+            m = glm::translate(glm::mat4(1.0f), glm::vec3(2.0f, 0.5f, -i * 4.0f));
+            m = glm::scale(m, glm::vec3(0.5f));
+            boxMatrices.push_back(m);
+        }
+
+        // --- B. 中距离建筑区 (20 - 100米) ---
+        // 放一些巨大的柱子，测试第 1、2 级级联的过渡
+        for (int i = 1; i < 10; ++i) 
+        {
+            glm::mat4 m = glm::mat4(1.0f);
+            // 放在更远的地方，每隔 10 米放一个
+            float zPos = -20.0f - (i * 10.0f); 
+
+            // 左边的大柱子
+            m = glm::translate(glm::mat4(1.0f), glm::vec3(-5.0f, 2.0f, zPos));
+            m = glm::scale(m, glm::vec3(1.0f, 4.0f, 1.0f)); // 拉高变成柱子
+            pillarMatrices.push_back(m);
+
+            // 右边的大柱子
+            m = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 2.0f, zPos));
+            m = glm::scale(m, glm::vec3(1.0f, 4.0f, 1.0f));
+            pillarMatrices.push_back(m);
+        }
+
+        // --- C. 远景巨石区 (100米开外) ---
+        // 测试最远层级的阴影（虽然模糊但必须有）
+        glm::mat4 m = glm::mat4(1.0f);
+        m = glm::translate(m, glm::vec3(0.0f, 5.0f, -150.0f));
+        m = glm::scale(m, glm::vec3(10.0f)); // 一个巨大的方块挡在路尽头
+        megalithMatrices.push_back(m);
+    }
+
+    // --- 画所有箱子 ---
+    boxMat.bind(shader); // 👔 换装：箱子材质
+    for (const auto& m : boxMatrices) {
+        shader.setMat4("model", m);
+        shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+        renderCube();
+    }
+
+    // --- 画所有柱子 ---
+    pillarMat.bind(shader); // 👔 换装：柱子材质
+    for (const auto& m : pillarMatrices) {
+        shader.setMat4("model", m);
+        shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+        renderCube();
+    }
+
+    // --- 画所有巨石 ---
+    megalithMat.bind(shader); // 👔 换装：巨石材质
+    for (const auto& m : megalithMatrices) {
+        shader.setMat4("model", m);
+        shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+        renderCube();
+    }
 }
