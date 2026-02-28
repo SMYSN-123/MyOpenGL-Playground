@@ -26,6 +26,7 @@ void renderScreenQuad();
 std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& projview);
 std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);
 std::vector<glm::mat4> getLightSpaceMatrices();
+void renderSphere();
 
 class PBRMaterial;
 
@@ -70,6 +71,9 @@ unsigned int pingpongFBO[2];
 unsigned int pingpongTexture[2];
 
 unsigned int floorVAO;
+
+unsigned int sphereVAO;      //渲染球体
+unsigned int indexCount;
 
 unsigned int normalMapVAO;
 unsigned int normalMapVBO;
@@ -122,7 +126,7 @@ int main() {
 
     glfwWindowHint(GLFW_SAMPLES, 4);
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Practice", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "MyEngine", NULL, NULL);
 
     if(window == NULL)
     {
@@ -153,6 +157,7 @@ int main() {
     Shader gaussianBlurShader("../src/gaussian_blur.vs", "../src/gaussian_blur.fs");
     Shader csmShadowDepthShader("../src/csm_shadows_depth.vs", "../src/csm_shadows_depth.fs", "../src/csm_shadows_depth.gs");
     Shader csmShadowShader("../src/csm_shadows.vs", "../src/csm_shadows.fs");
+    Shader purePBRShader("../src/pure_pbr.vs", "../src/pure_pbr.fs");
 
     // floor
     loadTexture floor_ao("../extern/floor/cobblestone_floor_09_ao_2k.png", false);
@@ -181,6 +186,14 @@ int main() {
     loadTexture megalith_disp("../extern/megalith/rock_face_03_disp_2k.png", false);
     loadTexture megalith_nor_gl("../extern/megalith/rock_face_03_nor_gl_2k.png", false);
     loadTexture megalith_rough("../extern/megalith/rock_face_03_rough_2k.png", false);
+
+    // metal_ball
+    loadTexture metal_ball_ao("../extern/metal_ball/metal_plate_02_ao_4k.png", false);
+    loadTexture metal_ball_diff("../extern/metal_ball/metal_plate_02_diff_4k.png", true);
+    loadTexture metal_ball_disp("../extern/metal_ball/metal_plate_02_disp_4k.png", false);
+    loadTexture metal_ball_nor_gl("../extern/metal_ball/metal_plate_02_nor_gl_4k.png", false);
+    loadTexture metal_ball_rough("../extern/metal_ball/metal_plate_02_rough_4k.png", false);
+    loadTexture metal_ball_metal("../extern/metal_ball/metal_plate_02_metal_4k.png", false);
 
     PBRMaterial floorMat = {floor_diff, floor_nor_gl, floor_disp, floor_rough, floor_ao};
     PBRMaterial boxMat = {box_diff, box_nor_gl, box_disp, box_rough, box_ao};
@@ -252,16 +265,20 @@ int main() {
     unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexshinerShader = glGetUniformBlockIndex(shiner.ProgramID, "Matrices");
     unsigned int uniformBlockIndexcsmShadowShader_matrices = glGetUniformBlockIndex(csmShadowShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexpurePBRShader_matrices = glGetUniformBlockIndex(purePBRShader.ProgramID, "Matrices");
 
     unsigned int uniformBlockIndexcsmShadowDepthShader = glGetUniformBlockIndex(csmShadowDepthShader.ProgramID, "LightSpaceMatrices");
     unsigned int uniformBlockIndexcsmShadowShader_light = glGetUniformBlockIndex(csmShadowShader.ProgramID, "LightSpaceMatrices");
+    unsigned int uniformBlockIndexpurePBRShader_light = glGetUniformBlockIndex(purePBRShader.ProgramID, "LightSpaceMatrices");
 
     glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
     glUniformBlockBinding(shiner.ProgramID, uniformBlockIndexshinerShader, 0);
     glUniformBlockBinding(csmShadowShader.ProgramID, uniformBlockIndexcsmShadowShader_matrices, 0);
+    glUniformBlockBinding(purePBRShader.ProgramID, uniformBlockIndexpurePBRShader_matrices, 0);
 
     glUniformBlockBinding(csmShadowDepthShader.ProgramID, uniformBlockIndexcsmShadowDepthShader, 1);
     glUniformBlockBinding(csmShadowShader.ProgramID, uniformBlockIndexcsmShadowShader_light, 1);
+    glUniformBlockBinding(purePBRShader.ProgramID, uniformBlockIndexpurePBRShader_light, 1);
 
     // MSAA Framebuffer
     glGenFramebuffers(1, &msaaFBO);
@@ -389,6 +406,15 @@ int main() {
     csmShadowShader.setInt("aoMap", 4);
     csmShadowShader.setInt("shadowMap", 10);
 
+    purePBRShader.use();
+    purePBRShader.setInt("albedoMap", 0);
+    purePBRShader.setInt("normalMap", 1);
+    purePBRShader.setInt("depthMap", 2);
+    purePBRShader.setInt("metallicMap", 3);
+    purePBRShader.setInt("roughnessMap", 4);
+    purePBRShader.setInt("aoMap", 5);
+    purePBRShader.setInt("shadowMap", 10);
+
     screenShader.use();
     screenShader.setInt("screenTexture", 0);
     screenShader.setInt("bloomBlur", 1);
@@ -427,6 +453,11 @@ int main() {
 
         renderScene(csmShadowDepthShader, floorMat, boxMat, pillarMat, megalithMat);
 
+        glm::mat4 model = glm::mat4(1.0f);
+        csmShadowDepthShader.setMat4("model", model);
+
+        renderSphere();
+
         // glCullFace(GL_BACK);
 
         glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
@@ -438,7 +469,7 @@ int main() {
 
         ourShader.use();
 
-        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::mat4(1.0f);
         ourShader.setMat4("model", model);
 
         glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 500.0f);
@@ -474,14 +505,55 @@ int main() {
 
         renderScene(csmShadowShader, floorMat, boxMat, pillarMat, megalithMat);
 
-        // shiner.use();
+        purePBRShader.use();
 
-        // model = glm::mat4(1.0f);
-        // model = glm::translate(model, lightPos);
-        // model = glm::scale(model, glm::vec3(0.1f));
-        // shiner.setMat4("model", model);
-        // shiner.setVec3("lightColor", lightColor);
-        // renderCube();
+        model = glm::mat4(1.0f);
+        purePBRShader.setMat4("model", model);
+        purePBRShader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+
+        purePBRShader.setVec3("viewPos", camera.Position);
+        purePBRShader.setVec3("lightDir", lightDir);
+        purePBRShader.setVec3("lightColor", lightColor * 5.0f);
+
+        purePBRShader.setBool("blinn", blinn);
+        purePBRShader.setFloat("far_plane", cameraFarPlane);
+        purePBRShader.setFloat("height_scale", 0.1f);
+        purePBRShader.setBool("useParallax", false);
+
+        purePBRShader.setInt("cascadeCount", static_cast<int>(shadowCascadeLevels.size()));
+        for (size_t i = 0; i < shadowCascadeLevels.size(); ++i)
+        {
+            purePBRShader.setFloat("cascadePlaneDistances[" + std::to_string(i) + "]", shadowCascadeLevels[i]);
+        }
+
+        metal_ball_ao.bind(5);
+        metal_ball_diff.bind(0);
+        metal_ball_disp.bind(2);
+        metal_ball_nor_gl.bind(1);
+        metal_ball_rough.bind(4);
+        metal_ball_metal.bind(3);
+
+        glActiveTexture(GL_TEXTURE10);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps);
+
+        renderSphere();
+
+        shiner.use();
+
+        glm::mat4 sunModel = glm::mat4(1.0f);
+
+        float sunDistance = 150.0f; 
+        glm::vec3 sunPos = lightDir * sunDistance; 
+
+        sunModel = glm::translate(sunModel, sunPos);
+
+        sunModel = glm::scale(sunModel, glm::vec3(8.0f)); 
+
+        shiner.setMat4("model", sunModel);
+
+        shiner.setVec3("lightColor", lightColor * 100.0f); 
+
+        renderSphere(); 
 
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
@@ -1128,4 +1200,136 @@ void renderScene(const Shader &shader, const PBRMaterial& floorMat, const PBRMat
         shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
         renderCube();
     }
+}
+
+void renderSphere()
+{
+    if(sphereVAO == 0)
+    {
+        glGenVertexArrays(1, &sphereVAO);
+
+        unsigned int sphereVBO;
+        unsigned int sphereEBO;
+
+        glGenBuffers(1, &sphereVBO);
+        glGenBuffers(1, &sphereEBO);
+
+        std::vector<glm::vec3> position;
+        std::vector<glm::vec2> uv;
+        std::vector<glm::vec3> normals;
+        std::vector<glm::vec3> tangents;
+        std::vector<glm::vec3> bitangents;
+        std::vector<unsigned int> indices;
+
+        const unsigned int X_SEGMENTS = 64;
+        const unsigned int Y_SEGMENTS = 64;
+        const float PI = 3.14159265359f;
+
+        for(unsigned int x = 0; x <= X_SEGMENTS; x++)
+        {
+            for(unsigned int y = 0; y <= Y_SEGMENTS; y++)
+            {
+                float xSegment = static_cast<float>(x) / static_cast<float>(X_SEGMENTS);
+                float ySegment = static_cast<float>(y) / static_cast<float>(Y_SEGMENTS);
+
+                float yPos = std::cos(ySegment * PI);
+                float sliceRadius = std::sin(ySegment * PI);
+
+                float xPos = std::cos(xSegment * 2.0f * PI) * sliceRadius;
+                float zPos = std::sin(xSegment * 2.0f * PI) * sliceRadius;
+
+                // U方向的导数 (切线)
+                glm::vec3 tangent(
+                    -std::sin(xSegment * 2.0f * PI), 
+                    0.0f, 
+                    std::cos(xSegment * 2.0f * PI)
+                );
+                
+                // V方向的导数 (副切线)
+                glm::vec3 bitangent(
+                    std::cos(xSegment * 2.0f * PI) * std::cos(ySegment * PI),
+                    -std::sin(ySegment * PI),
+                    std::sin(xSegment * 2.0f * PI) * std::cos(ySegment * PI)
+                );
+
+                position.push_back(glm::vec3(xPos, yPos, zPos));
+                uv.push_back(glm::vec2(xSegment, ySegment));
+                normals.push_back(glm::vec3(xPos, yPos, zPos));
+                tangents.push_back(tangent);
+                bitangents.push_back(bitangent);
+            }
+        }
+
+        bool oddRow = false;
+        for(unsigned int y = 0; y < Y_SEGMENTS; y++)
+        {
+            if(!oddRow)
+            {
+                for(unsigned int x = 0; x <= X_SEGMENTS; x++)
+                {
+                    indices.push_back(y * (X_SEGMENTS + 1) + x);
+                    indices.push_back((y + 1) * (X_SEGMENTS + 1) + x);
+                }
+            }
+            else
+            {
+                for(int x = X_SEGMENTS; x >= 0; x--)
+                {
+                    indices.push_back((y + 1) * (X_SEGMENTS + 1) + x);
+                    indices.push_back(y * (X_SEGMENTS + 1) + x);
+                }
+            }
+            oddRow = !oddRow;
+        }
+        indexCount = static_cast<unsigned int>(indices.size());
+
+        std::vector<float> data;
+        for(unsigned int i = 0; i < position.size(); i++)
+        {
+            data.push_back(position[i].x);
+            data.push_back(position[i].y);
+            data.push_back(position[i].z);
+
+            if(normals.size() > 0)
+            {
+                data.push_back(normals[i].x);
+                data.push_back(normals[i].y);
+                data.push_back(normals[i].z);
+            }
+
+            if(uv.size() > 0)
+            {
+                data.push_back(uv[i].x);
+                data.push_back(uv[i].y);
+            }
+
+            data.push_back(tangents[i].x);
+            data.push_back(tangents[i].y);
+            data.push_back(tangents[i].z);
+
+            data.push_back(bitangents[i].x);
+            data.push_back(bitangents[i].y);
+            data.push_back(bitangents[i].z);
+        }
+        glBindVertexArray(sphereVAO);
+
+        glBindBuffer(GL_ARRAY_BUFFER, sphereVBO);
+        glBufferData(GL_ARRAY_BUFFER, data.size() * sizeof(float), &data[0], GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sphereEBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(6 * sizeof(float)));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(8 * sizeof(float)));
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(11 * sizeof(float)));
+    }
+    glBindVertexArray(sphereVAO);
+    glDrawElements(GL_TRIANGLE_STRIP, indexCount, GL_UNSIGNED_INT, 0);
 }
