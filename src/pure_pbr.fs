@@ -27,9 +27,14 @@ layout (std140) uniform LightSpaceMatrices
 uniform sampler2D albedoMap;
 uniform sampler2D normalMap;
 uniform sampler2D depthMap;
-uniform sampler2D metallicMap;
+uniform sampler2D metallicMap; // 如果是三合一，这其实是 ORM 贴图！
 uniform sampler2D roughnessMap;
 uniform sampler2D aoMap;
+
+// --- IBL 环境光贴图 ---
+uniform samplerCube irradianceMap; // 🌟 预计算的漫反射辐照度贴图
+uniform samplerCube prefilterMap;  // 🌟 预过滤的环境高光贴图
+uniform sampler2D   brdfLUT;       // 🌟 BRDF 积分查找表
 
 // --- CSM 阴影专用 ---
 uniform sampler2DArray shadowMap;  // 🆕 这里的类型变了！是数组！
@@ -42,12 +47,14 @@ uniform vec3 lightDir;             // 🌞 太阳光的方向 (指向光源)
 uniform vec3 viewPos;
 uniform vec3 lightColor;
 
+
 // --- 其他配置 ---
 uniform float height_scale;
 uniform float far_plane;
 uniform bool blinn;
 const bool DEBUG_CSM_LAYER = false;
 uniform bool useParallax; // 🌟 新增：视差贴图开关
+uniform bool usePackedMap; // 三合一开关
 
 const float PI = 3.14159265359;
 
@@ -88,6 +95,12 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
 vec3 fresnelSchlick(float cosTheta, vec3 F0)
 {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// 🌟 新增：带有粗糙度修正的 Fresnel 函数 (用于环境光)
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 float ShadowCalculation(vec3 fragPosWorld, vec3 normal, out vec3 debugColor)
@@ -296,29 +309,51 @@ void main()
     }
 
     // --- 采样纹理 ---
-    vec3 normal = texture(normalMap, texCoords).rgb;
-    float roughness = texture(roughnessMap, texCoords).r;
-    float ao = texture(aoMap, texCoords).r;
     vec3 albedo = texture(albedoMap, texCoords).rgb;
-    float metallic = texture(metallicMap, texCoords).r;
+    vec3 normal = texture(normalMap, texCoords).rgb;
+
+    float metallic;
+    float roughness;
+    float ao;
+
+    if (usePackedMap) 
+    {
+        vec3 orm = texture(metallicMap, texCoords).rgb;
+        // 按照业界标准 (glTF/Unreal) 解析 ORM：
+        // R 通道 = Ambient Occlusion (AO)
+        // G 通道 = Roughness
+        // B 通道 = Metallic
+        ao        = orm.r;
+        roughness = orm.g;
+        metallic  = orm.b;
+    } 
+    else 
+    {
+        // 传统散装模式：从各自的 sampler 里提取 R 通道
+        metallic  = texture(metallicMap, texCoords).r;
+        roughness = texture(roughnessMap, texCoords).r;
+        ao        = texture(aoMap, texCoords).r;
+    }
 
     normal = normal * 2.0 - 1.0; // 从 [0,1] 转换到 [-1,1]
     normal = normalize(fs_in.TBN * normal); // 转换到世界空间
-
-    vec3 Lo = vec3(0.0);
-
     vec3 N = normalize(normal);
+
     vec3 V = normalize(viewPos - fs_in.FragPos);
+    vec3 R = reflect(-V, N); // 🌟 计算反射向量 (IBL 采样预过滤贴图时需要)
+
+    vec3 F0 = vec3(0.04);
+    F0 = mix(F0, albedo, metallic);
+
+    // 直接光照
+    vec3 Lo = vec3(0.0);
     vec3 L = normalize(lightDir);
     vec3 H = normalize(V + L);
 
     float attenuation = 1.0;
     vec3 radiance = lightColor * attenuation;
 
-    vec3 F0 = vec3(0.04);
-    F0 = mix(F0, albedo, metallic);
     vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-
     float NDF = D_GGX_TR(N, H, roughness);
     float G = GeometrySmith(N, V, L, roughness);
 
@@ -326,15 +361,31 @@ void main()
     float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.001;
     vec3 specular = nominator / denominator;
 
+    // 能量守恒：漫反射与镜面反射互斥
     vec3 KS = F;
     vec3 KD = vec3(1.0) - KS;
-
     KD *= 1.0 - metallic;
 
     float NdotL = max(dot(N, L), 0.0);
     Lo += (KD * albedo / PI + specular) * radiance * NdotL;
 
-    vec3 ambient = vec3(0.03) * albedo * ao;
+    // 间接光照计算 (IBL 环境光)
+    vec3 KS_ambient = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
+    vec3 KD_ambient = 1.0 - KS_ambient;
+    KD_ambient *= 1.0 - metallic; // // 同样，纯金属的漫反射为 0
+
+    // 漫反射 IBL
+    vec3 irradiance = texture(irradianceMap, N).rgb;
+    vec3 diffuse_ambient = irradiance * albedo;
+
+    // 镜面反射 IBL
+    const float MAX_REFLECTION_LOD = 4.0;
+    vec3 prefilteredColor = textureLod(prefilterMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+    vec2 envBRDF = texture(brdfLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
+
+    vec3 specular_ambient = prefilteredColor * (KS_ambient * envBRDF.x + envBRDF.y);
+
+    vec3 ambient = (KD_ambient * diffuse_ambient + specular_ambient) * ao;
 
     // Calculate shadow
     vec3 debugCascadeColor = vec3(0.0);

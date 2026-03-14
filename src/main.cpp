@@ -33,38 +33,58 @@ class PBRMaterial;
 class PBRMaterial
 {
 public:
-    PBRMaterial(loadTexture& diff, loadTexture& nor, loadTexture& disp, loadTexture& rough, loadTexture& ao) : my_diff(diff), my_nor(nor), my_disp(disp), my_rough(rough), my_ao(ao) {}
+    // ---------------------------------------------------------
+    // 构造函数 1：传统散装贴图模式 (传入 6 张图)
+    // ---------------------------------------------------------
+    PBRMaterial(loadTexture& diff, loadTexture& nor, loadTexture& disp, loadTexture& metal, loadTexture& rough, loadTexture& ao) 
+        : my_diff(diff), my_nor(nor), my_disp(disp), my_metal(metal), my_rough(rough), my_ao(ao), isPacked(false) {}
+
+    // ---------------------------------------------------------
+    // 构造函数 2：现代 ORM 三合一贴图模式 (传入 4 张图)
+    // ---------------------------------------------------------
+    // 注意：我们将 orm 贴图同时初始化给 metal, rough, ao 的引用，保证 C++ 不报错
+    PBRMaterial(loadTexture& diff, loadTexture& nor, loadTexture& disp, loadTexture& orm) 
+        : my_diff(diff), my_nor(nor), my_disp(disp), my_metal(orm), my_rough(orm), my_ao(orm), isPacked(true) {}
+
+    bool isPacked; // 标记当前材质是否使用了打包贴图
 
     void bind(const Shader& shader) const
     {
         my_diff.bind(0);
         my_nor.bind(1);
         my_disp.bind(2);
-        my_rough.bind(3);
-        my_ao.bind(4);
+        my_metal.bind(3); // 如果是 packed，第 3 槽位绑定的就是 ORM 贴图
+        
+        // 如果不是打包图，才需要绑定 4 和 5 槽位
+        if (!isPacked) {
+            my_rough.bind(4);
+            my_ao.bind(5);
+        }
+
+        // 核心：通过 uniform 告诉 Shader 当前材质的状态
+        shader.setBool("usePackedMap", isPacked); 
     }
 private:
     loadTexture& my_diff;
     loadTexture& my_nor;
     loadTexture& my_disp;
+    loadTexture& my_metal;
     loadTexture& my_rough;
     loadTexture& my_ao;
 };
 
-void renderScene(const Shader &shader, const PBRMaterial& floorMat, const PBRMaterial& boxMat, const PBRMaterial& pillarMat, const PBRMaterial& megalithMat);
+void renderScene(const Shader &shader, const PBRMaterial& pavementMat, const PBRMaterial& marbleMat, const PBRMaterial& fabricMat, const PBRMaterial& greenmatelMat);
 
 unsigned int SCR_WIDTH = 800;
 unsigned int SCR_HEIGHT = 600;
 
 // MSAA FBO: 用于渲染 3D 场景 (抗锯齿)
 unsigned int msaaFBO;
-// unsigned int textureColorBufferMultiSampled; // MSAA 纹理
 unsigned int textureColorBufferMultiSampled[2]; // MSAA 纹理数组 (0:场景, 1:亮部)
 unsigned int rboMultiSampled;                // MSAA 深度缓冲
 
 // Intermediate FBO: 用于接收 MSAA 还原后的普通图像 (做后处理)
 unsigned int intermediateFBO;
-// unsigned int screenTexture;                  // 普通纹理
 unsigned int screenTexture[2];                  // 普通纹理数组 (0:场景, 1:亮部)
 
 unsigned int pingpongFBO[2];
@@ -152,53 +172,46 @@ int main() {
 
     Shader ourShader("../src/shader.vs", "../src/shader.fs");
     Shader screenShader("../src/screen.vs", "../src/screen.fs");
-    Shader debugDepthShader("../src/screen.vs", "../src/debugDepth.fs");
     Shader shiner("../src/shiner.vs", "../src/shiner.fs");
     Shader gaussianBlurShader("../src/gaussian_blur.vs", "../src/gaussian_blur.fs");
     Shader csmShadowDepthShader("../src/csm_shadows_depth.vs", "../src/csm_shadows_depth.fs", "../src/csm_shadows_depth.gs");
-    Shader csmShadowShader("../src/csm_shadows.vs", "../src/csm_shadows.fs");
     Shader purePBRShader("../src/pure_pbr.vs", "../src/pure_pbr.fs");
+    Shader equirectangularToCubemapShader("../src/equirectangular_to_cubemap.vs", "../src/equirectangular_to_cubemap.fs");
+    Shader backgroundShader("../src/background.vs", "../src/background.fs");
+    Shader irradianceConvolutionShader("../src/irradiance_convolution.vs", "../src/irradiance_convolution.fs");
+    Shader prefilterShader("../src/prefilter.vs", "../src/prefilter.fs");
+    Shader brdfShader("../src/brdf.vs", "../src/brdf.fs");
+    Shader debugShader("../src/screen.vs", "../src/debug.fs");
+    Shader glassballShader("../src/glass_ball.vs", "../src/glass_ball.fs");
 
-    // floor
-    loadTexture floor_ao("../extern/floor/cobblestone_floor_09_ao_2k.png", false);
-    loadTexture floor_diff("../extern/floor/cobblestone_floor_09_diff_2k.jpg", true);
-    loadTexture floor_disp("../extern/floor/cobblestone_floor_09_disp_2k.png", false);
-    loadTexture floor_nor_gl("../extern/floor/cobblestone_floor_09_nor_gl_2k.png", false);
-    loadTexture floor_rough("../extern/floor/cobblestone_floor_09_rough_2k.png", false);
+    // pavement
+    loadTexture pavement_diff("../extern/Pavement/pavement_02_diff_2k.jpg", true);
+    loadTexture pavement_nor_gl("../extern/Pavement/pavement_02_nor_gl_2k.png", false);
+    loadTexture pavement_disp("../extern/Pavement/pavement_02_disp_2k.png", false);
+    loadTexture pavement_matel("../extern/Pavement/pavement_02_arm_2k.png", false);
 
-    // box
-    loadTexture box_ao("../extern/box/plywood_ao_2k.png", false);
-    loadTexture box_diff("../extern/box/plywood_diff_2k.jpg", true);
-    loadTexture box_disp("../extern/box/plywood_disp_2k.png", false);
-    loadTexture box_nor_gl("../extern/box/plywood_nor_gl_2k.png", false);
-    loadTexture box_rough("../extern/box/plywood_rough_2k.png", false);
+    // marble
+    loadTexture marble_diff("../extern/marble/marble_01_diff_2k.jpg", true);
+    loadTexture marble_nor_gl("../extern/marble/marble_01_nor_gl_2k.png", false);
+    loadTexture marble_disp("../extern/marble/marble_01_disp_2k.png", false);
+    loadTexture marble_matel("../extern/marble/marble_01_arm_2k.png", false);
 
-    // pillar
-    loadTexture pillar_ao("../extern/pillar/concrete_wall_006_ao_2k.png", false);
-    loadTexture pillar_diff("../extern/pillar/concrete_wall_006_diff_2k.jpg", true);
-    loadTexture pillar_disp("../extern/pillar/concrete_wall_006_disp_2k.png", false);
-    loadTexture pillar_nor_gl("../extern/pillar/concrete_wall_006_nor_gl_2k.png", false);
-    loadTexture pillar_rough("../extern/pillar/concrete_wall_006_rough_2k.png", false);
+    // Patterned fabric
+    loadTexture fabric_diff("../extern/Patterned fabric/floral_jacquard_diff_2k.jpg", true);
+    loadTexture fabric_nor_gl("../extern/Patterned fabric/floral_jacquard_nor_gl_2k.png", false);
+    loadTexture fabric_disp("../extern/Patterned fabric/floral_jacquard_disp_2k.png", false);
+    loadTexture fabric_matel("../extern/Patterned fabric/floral_jacquard_arm_2k.png", false);
 
-    // megalith
-    loadTexture megalith_ao("../extern/megalith/rock_face_03_ao_2k.png", false);
-    loadTexture megalith_diff("../extern/megalith/rock_face_03_diff_2k.jpg", true);
-    loadTexture megalith_disp("../extern/megalith/rock_face_03_disp_2k.png", false);
-    loadTexture megalith_nor_gl("../extern/megalith/rock_face_03_nor_gl_2k.png", false);
-    loadTexture megalith_rough("../extern/megalith/rock_face_03_rough_2k.png", false);
+    // Green Metal Rust
+    loadTexture matel_diff("../extern/Green Metal Rust/green_metal_rust_diff_2k.jpg", true);
+    loadTexture matel_nor_gl("../extern/Green Metal Rust/green_metal_rust_nor_gl_2k.png", false);
+    loadTexture matel_disp("../extern/Green Metal Rust/green_metal_rust_disp_2k.png", false);
+    loadTexture matel_matel("../extern/Green Metal Rust/green_metal_rust_arm_2k.png", false);
 
-    // metal_ball
-    loadTexture metal_ball_ao("../extern/metal_ball/metal_plate_02_ao_4k.png", false);
-    loadTexture metal_ball_diff("../extern/metal_ball/metal_plate_02_diff_4k.png", true);
-    loadTexture metal_ball_disp("../extern/metal_ball/metal_plate_02_disp_4k.png", false);
-    loadTexture metal_ball_nor_gl("../extern/metal_ball/metal_plate_02_nor_gl_4k.png", false);
-    loadTexture metal_ball_rough("../extern/metal_ball/metal_plate_02_rough_4k.png", false);
-    loadTexture metal_ball_metal("../extern/metal_ball/metal_plate_02_metal_4k.png", false);
-
-    PBRMaterial floorMat = {floor_diff, floor_nor_gl, floor_disp, floor_rough, floor_ao};
-    PBRMaterial boxMat = {box_diff, box_nor_gl, box_disp, box_rough, box_ao};
-    PBRMaterial pillarMat = {pillar_diff, pillar_nor_gl, pillar_disp, pillar_rough, pillar_ao};
-    PBRMaterial megalithMat = {megalith_diff, megalith_nor_gl, megalith_disp, megalith_rough, megalith_ao};
+    PBRMaterial pavementMat = {pavement_diff, pavement_nor_gl, pavement_disp, pavement_matel};
+    PBRMaterial marbleMat = {marble_diff, marble_nor_gl, marble_disp, marble_matel};
+    PBRMaterial fabricMat = {fabric_diff, fabric_nor_gl, fabric_disp, fabric_matel};
+    PBRMaterial greenmatelMat = {matel_diff, matel_nor_gl, matel_disp, matel_matel};
 
     glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
@@ -227,57 +240,22 @@ int main() {
     -100.0f, -2.0f, -100.0f,  0.0f, 1.0f, 0.0f,    0.0f, 100.0f,   1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f  // 左上
 };
 
-    // 更新 VAO 设置 (Stride 改为 14 * sizeof(float))
-    unsigned int floorVBO;
-    glGenVertexArrays(1, &floorVAO);
-    glGenBuffers(1, &floorVBO);
-    glBindVertexArray(floorVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, floorVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(floorVertices), floorVertices, GL_STATIC_DRAW);
-
-    // layout 0: Pos
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)0);
-
-    // layout 1: Normal
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(3 * sizeof(float)));
-
-    // layout 2: TexCoords
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(6 * sizeof(float)));
-
-    // layout 3: Tangent
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(8 * sizeof(float)));
-
-    // layout 4: Bitangent
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 14 * sizeof(float), (void*)(11 * sizeof(float)));
-
-    glBindVertexArray(0);
-
-    // // 1. 初始化
-    // std::vector<std::string> faces = SkyboxHelper::GetFacesInOrder("../extern/skybox");
-    // // 创建对象 (自动加载纹理、编译Shader、配置VAO)
-    // Skybox mySky(faces);
-
     unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexshinerShader = glGetUniformBlockIndex(shiner.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexcsmShadowShader_matrices = glGetUniformBlockIndex(csmShadowShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexpurePBRShader_matrices = glGetUniformBlockIndex(purePBRShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexbackgroundShader = glGetUniformBlockIndex(backgroundShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexglassballShader = glGetUniformBlockIndex(glassballShader.ProgramID, "Matrices");
 
     unsigned int uniformBlockIndexcsmShadowDepthShader = glGetUniformBlockIndex(csmShadowDepthShader.ProgramID, "LightSpaceMatrices");
-    unsigned int uniformBlockIndexcsmShadowShader_light = glGetUniformBlockIndex(csmShadowShader.ProgramID, "LightSpaceMatrices");
     unsigned int uniformBlockIndexpurePBRShader_light = glGetUniformBlockIndex(purePBRShader.ProgramID, "LightSpaceMatrices");
 
     glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
     glUniformBlockBinding(shiner.ProgramID, uniformBlockIndexshinerShader, 0);
-    glUniformBlockBinding(csmShadowShader.ProgramID, uniformBlockIndexcsmShadowShader_matrices, 0);
     glUniformBlockBinding(purePBRShader.ProgramID, uniformBlockIndexpurePBRShader_matrices, 0);
+    glUniformBlockBinding(backgroundShader.ProgramID, uniformBlockIndexbackgroundShader, 0);
+    glUniformBlockBinding(glassballShader.ProgramID, uniformBlockIndexglassballShader, 0);
 
     glUniformBlockBinding(csmShadowDepthShader.ProgramID, uniformBlockIndexcsmShadowDepthShader, 1);
-    glUniformBlockBinding(csmShadowShader.ProgramID, uniformBlockIndexcsmShadowShader_light, 1);
     glUniformBlockBinding(purePBRShader.ProgramID, uniformBlockIndexpurePBRShader_light, 1);
 
     // MSAA Framebuffer
@@ -394,17 +372,211 @@ int main() {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pingpongTexture[i], 0);
     }
 
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    // hdr Texture
+    stbi_set_flip_vertically_on_load(true);
+    int width, height, nrComponents;
+    float *data = stbi_loadf("../src/church_meeting_room_4k.hdr", &width, &height, &nrComponents, 0);
+    unsigned int hdrTexture;
+    if (data)
+    {
+        glGenTextures(1, &hdrTexture);
+        glBindTexture(GL_TEXTURE_2D, hdrTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, data); 
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        stbi_image_free(data);
+    }
+    else
+    {
+        std::cout << "Failed to load HDR image." << std::endl;
+    }
+
+    // capture FBO
+    unsigned int captureFBO, captureRBO;
+    glGenFramebuffers(1, &captureFBO);
+    glGenRenderbuffers(1, &captureRBO);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, captureRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 512, 512);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, captureRBO);
+
+    unsigned int envCubemap;
+    glGenTextures(1, &envCubemap);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+    for(unsigned int i = 0; i < 6; i++)
+    {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, 512, 512, 0, GL_RGB, GL_FLOAT, nullptr);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glm::mat4 captureProjection = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 10.0f);
+    glm::mat4 captureViews[] = 
+    {
+        glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 1.0f,  0.0f,  0.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+        glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(-1.0f,  0.0f,  0.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+        glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f,  1.0f,  0.0f), glm::vec3(0.0f,  0.0f,  1.0f)),
+        glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f, -1.0f,  0.0f), glm::vec3(0.0f,  0.0f, -1.0f)),
+        glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f,  0.0f,  1.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+        glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3( 0.0f,  0.0f, -1.0f), glm::vec3(0.0f, -1.0f,  0.0f))
+    };
+
+    equirectangularToCubemapShader.use();
+
+    equirectangularToCubemapShader.setInt("equirectangularMap", 0);
+    equirectangularToCubemapShader.setMat4("projection", captureProjection);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, hdrTexture);
+
+    glViewport(0, 0, 512, 512);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+
+    for(unsigned int i = 0; i < 6; i++)
+    {
+        equirectangularToCubemapShader.setMat4("view", captureViews[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, envCubemap, 0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        renderCube();
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+
+    unsigned int irradianceMap;
+    glGenTextures(1, &irradianceMap);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
+    for (unsigned int i = 0; i < 6; ++i)
+    {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, 32, 32, 0, GL_RGB, GL_FLOAT, nullptr);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, captureRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 32, 32);
+
+    irradianceConvolutionShader.use();
+    
+    irradianceConvolutionShader.setInt("environmentMap", 0);
+    irradianceConvolutionShader.setMat4("projection", captureProjection);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+
+    glViewport(0, 0, 32, 32);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+    for (unsigned int i = 0; i < 6; ++i)
+    {
+        irradianceConvolutionShader.setMat4("view", captureViews[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, irradianceMap, 0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        renderCube();
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    unsigned int prefilterMap;
+    glGenTextures(1, &prefilterMap);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, prefilterMap);
+    for (unsigned int i = 0; i < 6; ++i)
+    {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, 128, 128, 0, GL_RGB, GL_FLOAT, nullptr);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); 
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+
+    prefilterShader.use();
+
+    prefilterShader.setInt("environmentMap", 0);
+    prefilterShader.setMat4("projection", captureProjection);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+    unsigned int maxMiplevels = 5;
+    for(unsigned int mip = 0; mip < maxMiplevels; mip++)
+    {
+        unsigned int mipWidth = static_cast<unsigned int>(128 * std::pow(0.5, mip));
+        unsigned int mipHeight = static_cast<unsigned int>(128 * std::pow(0.5, mip));
+        glBindRenderbuffer(GL_RENDERBUFFER, captureRBO);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, mipWidth, mipHeight);
+        glViewport(0, 0, mipWidth, mipHeight);
+
+        float roughness = static_cast<float>(mip) / static_cast<float>(maxMiplevels - 1);
+        prefilterShader.setFloat("roughness", roughness);
+        for(unsigned int i = 0; i < 6; i++)
+        {
+            prefilterShader.setMat4("view", captureViews[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, prefilterMap, mip);
+
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            renderCube();
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    unsigned int brdfLUTTexture;
+    glGenTextures(1, &brdfLUTTexture);
+
+    glBindTexture(GL_TEXTURE_2D, brdfLUTTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, 512, 512, 0, GL_RG, GL_FLOAT, 0);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, captureRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 512, 512);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, brdfLUTTexture, 0);
+
+    brdfShader.use();
+
+    glViewport(0, 0, 512, 512);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    renderScreenQuad();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // --- 准备用于 Debug 的 FBO ---
+    unsigned int debugFBO;
+    glGenFramebuffers(1, &debugFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, debugFBO);
+
+    // 将你生成的 brdfLUT 贴图挂载到这个 FBO 的颜色附件 0 上
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, brdfLUTTexture, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    debugShader.use();
+    debugShader.setInt("debugTexture", 0);
+
+    backgroundShader.use();
+    backgroundShader.setInt("environmentMap", 0);
 
     csmShadowDepthShader.use();
-
-    csmShadowShader.use();
-    csmShadowShader.setInt("diffuseTexture", 0);
-    csmShadowShader.setInt("normalMap", 1);
-    csmShadowShader.setInt("depthMap", 2);
-    csmShadowShader.setInt("roughnessMap", 3);
-    csmShadowShader.setInt("aoMap", 4);
-    csmShadowShader.setInt("shadowMap", 10);
 
     purePBRShader.use();
     purePBRShader.setInt("albedoMap", 0);
@@ -413,7 +585,15 @@ int main() {
     purePBRShader.setInt("metallicMap", 3);
     purePBRShader.setInt("roughnessMap", 4);
     purePBRShader.setInt("aoMap", 5);
+    purePBRShader.setInt("irradianceMap", 6);
+    purePBRShader.setInt("prefilterMap", 7);
+    purePBRShader.setInt("brdfLUT", 8);
     purePBRShader.setInt("shadowMap", 10);
+
+    glassballShader.use();
+    glassballShader.setInt("irradianceMap", 0);
+    glassballShader.setInt("prefilterMap", 1);
+    glassballShader.setInt("brdfLUT", 2);
 
     screenShader.use();
     screenShader.setInt("screenTexture", 0);
@@ -422,7 +602,8 @@ int main() {
     glBindVertexArray(0);
 
     // --- 渲染循环 ---
-    while (!glfwWindowShouldClose(window)) {
+    while (!glfwWindowShouldClose(window))
+    {
 
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
@@ -451,11 +632,14 @@ int main() {
 
         // glCullFace(GL_FRONT);
 
-        renderScene(csmShadowDepthShader, floorMat, boxMat, pillarMat, megalithMat);
+        renderScene(csmShadowDepthShader, pavementMat, marbleMat, fabricMat, greenmatelMat);
 
-        glm::mat4 model = glm::mat4(1.0f);
-        csmShadowDepthShader.setMat4("model", model);
+        glm::mat4 modelMirror = glm::translate(glm::mat4(1.0f), glm::vec3(-2.5f, 1.0f, 0.0f));
+        csmShadowDepthShader.setMat4("model", modelMirror);
+        renderSphere();
 
+        glm::mat4 modelGlass = glm::translate(glm::mat4(1.0f), glm::vec3(2.5f, 1.0f, 0.0f));
+        csmShadowDepthShader.setMat4("model", modelGlass);
         renderSphere();
 
         // glCullFace(GL_BACK);
@@ -469,7 +653,7 @@ int main() {
 
         ourShader.use();
 
-        model = glm::mat4(1.0f);
+        glm::mat4 model = glm::mat4(1.0f);
         ourShader.setMat4("model", model);
 
         glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 500.0f);
@@ -480,35 +664,8 @@ int main() {
         glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
 
-        csmShadowShader.use();
-
-        model = glm::mat4(1.0f);
-
-        csmShadowShader.use();
-
-        csmShadowShader.setVec3("viewPos", camera.Position);
-        csmShadowShader.setVec3("lightDir", lightDir);
-        csmShadowShader.setVec3("lightColor", lightColor);
-
-        csmShadowShader.setBool("blinn", blinn);
-        csmShadowShader.setFloat("far_plane", cameraFarPlane);
-        csmShadowShader.setFloat("height_scale", 0.1f);
-
-        csmShadowShader.setInt("cascadeCount", static_cast<int>(shadowCascadeLevels.size()));
-        for (size_t i = 0; i < shadowCascadeLevels.size(); ++i)
-        {
-            csmShadowShader.setFloat("cascadePlaneDistances[" + std::to_string(i) + "]", shadowCascadeLevels[i]);
-        }
-
-        glActiveTexture(GL_TEXTURE10);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps);
-
-        renderScene(csmShadowShader, floorMat, boxMat, pillarMat, megalithMat);
-
         purePBRShader.use();
 
-        model = glm::mat4(1.0f);
-        purePBRShader.setMat4("model", model);
         purePBRShader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
 
         purePBRShader.setVec3("viewPos", camera.Position);
@@ -526,16 +683,56 @@ int main() {
             purePBRShader.setFloat("cascadePlaneDistances[" + std::to_string(i) + "]", shadowCascadeLevels[i]);
         }
 
-        metal_ball_ao.bind(5);
-        metal_ball_diff.bind(0);
-        metal_ball_disp.bind(2);
-        metal_ball_nor_gl.bind(1);
-        metal_ball_rough.bind(4);
-        metal_ball_metal.bind(3);
+        glActiveTexture(GL_TEXTURE6);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
+        glActiveTexture(GL_TEXTURE7);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, prefilterMap);
+        glActiveTexture(GL_TEXTURE8);
+        glBindTexture(GL_TEXTURE_2D, brdfLUTTexture);
 
         glActiveTexture(GL_TEXTURE10);
         glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps);
 
+        renderScene(purePBRShader, pavementMat, marbleMat, fabricMat, greenmatelMat);
+
+        glassballShader.use();
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, prefilterMap);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, brdfLUTTexture);
+
+        // ==========================================
+        // 🔴 渲染球体 1：完美镜面球 (Mirror)
+        // ==========================================
+        glassballShader.setInt("u_MaterialType", 0); // 启用标准 PBR 模式
+        glassballShader.setVec3("u_AlbedoVal", glm::vec3(1.0f, 1.0f, 1.0f)); // 银白色
+        glassballShader.setFloat("u_MetallicVal", 1.0f);   // 纯金属！
+        glassballShader.setFloat("u_RoughnessVal", 0.0f);  // 极其光滑！
+
+        glassballShader.setVec3("camPos", camera.Position);
+
+        // 设置模型矩阵位置，向左平移
+        modelMirror = glm::translate(glm::mat4(1.0f), glm::vec3(-2.5f, 1.0f, 0.0f));
+        glassballShader.setMat4("model", modelMirror);
+        renderSphere();
+
+        // ==========================================
+        // 🔵 渲染球体 2：色散水晶玻璃球 (Glass)
+        // ==========================================
+        glassballShader.setInt("u_MaterialType", 1); // 启用高级玻璃模式
+        // 玻璃本身颜色，vec3(1)是纯净玻璃，vec3(0.9, 1.0, 0.9)会有种可口可乐玻璃瓶的微绿色
+        glassballShader.setVec3("u_AlbedoVal", glm::vec3(1.0f, 1.0f, 1.0f)); 
+        // 玻璃是绝缘体，不需要传 Metallic 和 Roughness，因为在 Shader 中写死了
+        // (如果想要磨砂玻璃，可以在 Shader 的折射部分引入 Roughness 采样高 Lod 的环境图)
+        glassballShader.setFloat("u_MetallicVal", 0.0f); 
+        glassballShader.setFloat("u_RoughnessVal", 0.0f);
+
+        // 设置模型矩阵位置，向右平移
+        modelGlass = glm::translate(glm::mat4(1.0f), glm::vec3(2.5f, 1.0f, 0.0f));
+        glassballShader.setMat4("model", modelGlass);
         renderSphere();
 
         shiner.use();
@@ -546,14 +743,21 @@ int main() {
         glm::vec3 sunPos = lightDir * sunDistance; 
 
         sunModel = glm::translate(sunModel, sunPos);
-
         sunModel = glm::scale(sunModel, glm::vec3(8.0f)); 
 
         shiner.setMat4("model", sunModel);
-
         shiner.setVec3("lightColor", lightColor * 100.0f); 
 
-        renderSphere(); 
+        renderSphere();
+
+        backgroundShader.use();
+
+        glDepthFunc(GL_LEQUAL);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+
+        renderCube();
 
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
@@ -602,31 +806,39 @@ int main() {
         glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
         if (showDebugDepth) {
-            // --- 🔧 调试模式 ---
-            debugDepthShader.use();
-            debugDepthShader.setFloat("near_plane", 1.0f); // 必须和投影矩阵一致
-            debugDepthShader.setFloat("far_plane", 25.0f);  // 必须和投影矩阵一致
+            // --- 🔧 调试模式：直接 Blit BRDF 贴图 ---
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, debugFBO);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); // 0 表示屏幕默认缓冲
+
+            // 全屏覆盖 (方便看清细节，参数填你的屏幕宽高)
+            glBlitFramebuffer(0, 0, 512, 512, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+            glBindFramebuffer(GL_FRAMEBUFFER, 0); // 恢复默认状态
+
+            debugShader.use();
 
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps); // 绑定深度图
+            glBindTexture(GL_TEXTURE_2D, brdfLUTTexture); // 绑上你的 BRDF 贴图
+
+            renderScreenQuad();
         }
         else {
-            // --- 🎨 正常模式 ---
+            // --- 🎨 正常模式：渲染带后处理的场景 ---
             screenShader.use();
             screenShader.setFloat("offset_x", 1.0f / SCR_WIDTH);
             screenShader.setFloat("offset_y", 1.0f / SCR_HEIGHT);
 
             screenShader.setFloat("exposure", 1.0f);
-
             screenShader.setBool("bloom", bloom);
 
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, screenTexture[0]); // 场景
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, pingpongTexture[!horizontal]); // 泛光
+
+            // 只有正常模式才需要画这个全屏四边形
+            renderScreenQuad(); 
         }
-        
-        renderScreenQuad();
 
         glEnable(GL_DEPTH_TEST);
 
@@ -1113,95 +1325,6 @@ std::vector<glm::mat4> getLightSpaceMatrices()
     return ret;
 }
 
-void renderScene(const Shader &shader, const PBRMaterial& floorMat, const PBRMaterial& boxMat, const PBRMaterial& pillarMat, const PBRMaterial& megalithMat)
-{
-    // 1. 地板 (Floor)
-    // 画一个巨大的地板，确保它足够长，能接住所有的影子
-    floorMat.bind(shader);
-    glm::mat4 model = glm::mat4(1.0f);
-    shader.setMat4("model", model);
-    shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
-
-    glBindVertexArray(floorVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-
-    // 2. 箱子长廊 (The Crate Corridor)
-    // 这是一个确定性的循环，不再用随机数
-    // 我们沿着 Z 轴负方向（屏幕深处）铺设箱子
-    static std::vector<glm::mat4> boxMatrices;
-    static std::vector<glm::mat4> pillarMatrices;
-    static std::vector<glm::mat4> megalithMatrices;
-    
-    if (boxMatrices.empty())
-    {
-        // --- A. 近处细节区 (0 - 20米) ---
-        // 放一些小箱子，测试第 0 级级联的高清阴影
-        for (int i = 0; i < 5; ++i) 
-        {
-            glm::mat4 m = glm::mat4(1.0f);
-            // 左边一排
-            m = glm::translate(glm::mat4(1.0f), glm::vec3(-2.0f, 0.5f, -i * 4.0f)); 
-            m = glm::scale(m, glm::vec3(0.5f));
-            boxMatrices.push_back(m);
-
-            // 右边一排
-            m = glm::translate(glm::mat4(1.0f), glm::vec3(2.0f, 0.5f, -i * 4.0f));
-            m = glm::scale(m, glm::vec3(0.5f));
-            boxMatrices.push_back(m);
-        }
-
-        // --- B. 中距离建筑区 (20 - 100米) ---
-        // 放一些巨大的柱子，测试第 1、2 级级联的过渡
-        for (int i = 1; i < 10; ++i) 
-        {
-            glm::mat4 m = glm::mat4(1.0f);
-            // 放在更远的地方，每隔 10 米放一个
-            float zPos = -20.0f - (i * 10.0f); 
-
-            // 左边的大柱子
-            m = glm::translate(glm::mat4(1.0f), glm::vec3(-5.0f, 2.0f, zPos));
-            m = glm::scale(m, glm::vec3(1.0f, 4.0f, 1.0f)); // 拉高变成柱子
-            pillarMatrices.push_back(m);
-
-            // 右边的大柱子
-            m = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 2.0f, zPos));
-            m = glm::scale(m, glm::vec3(1.0f, 4.0f, 1.0f));
-            pillarMatrices.push_back(m);
-        }
-
-        // --- C. 远景巨石区 (100米开外) ---
-        // 测试最远层级的阴影（虽然模糊但必须有）
-        glm::mat4 m = glm::mat4(1.0f);
-        m = glm::translate(m, glm::vec3(0.0f, 5.0f, -150.0f));
-        m = glm::scale(m, glm::vec3(10.0f)); // 一个巨大的方块挡在路尽头
-        megalithMatrices.push_back(m);
-    }
-
-    // --- 画所有箱子 ---
-    boxMat.bind(shader); // 👔 换装：箱子材质
-    for (const auto& m : boxMatrices) {
-        shader.setMat4("model", m);
-        shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
-        renderCube();
-    }
-
-    // --- 画所有柱子 ---
-    pillarMat.bind(shader); // 👔 换装：柱子材质
-    for (const auto& m : pillarMatrices) {
-        shader.setMat4("model", m);
-        shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
-        renderCube();
-    }
-
-    // --- 画所有巨石 ---
-    megalithMat.bind(shader); // 👔 换装：巨石材质
-    for (const auto& m : megalithMatrices) {
-        shader.setMat4("model", m);
-        shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
-        renderCube();
-    }
-}
-
 void renderSphere()
 {
     if(sphereVAO == 0)
@@ -1332,4 +1455,39 @@ void renderSphere()
     }
     glBindVertexArray(sphereVAO);
     glDrawElements(GL_TRIANGLE_STRIP, indexCount, GL_UNSIGNED_INT, 0);
+}
+
+void renderScene(const Shader &shader, const PBRMaterial& pavementMat, const PBRMaterial& marbleMat, const PBRMaterial& fabricMat, const PBRMaterial& greenmatelMat)
+{
+    // --- 1. 渲染展台/地板 (Floor) ---
+    // 给材质球一个明亮的底座，方便接住你完美的 CSM 阴影
+    pavementMat.bind(shader);
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::translate(model, glm::vec3(0.0f, -0.5f, 0.0f)); // 稍微下沉，让球体正好坐落在上面
+    model = glm::scale(model, glm::vec3(8.0f, 0.5f, 8.0f));     // 变成一个长条形的展台
+    shader.setMat4("model", model);
+    shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+    renderCube(); 
+
+    // --- 2. 渲染材质球 (The Sphere Gallery) ---
+    marbleMat.bind(shader);
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, glm::vec3(0.0f, 1.0f, 0.0f)); // 半径为1，Y设为1正好贴地
+    shader.setMat4("model", model);
+    shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+    renderSphere();
+
+    fabricMat.bind(shader);
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, glm::vec3(-5.0f, 1.0f, 0.0f));
+    shader.setMat4("model", model);
+    shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+    renderSphere();
+
+    greenmatelMat.bind(shader);
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, glm::vec3(5.0f, 1.0f, 0.0f));
+    shader.setMat4("model", model);
+    shader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+    renderSphere();
 }
