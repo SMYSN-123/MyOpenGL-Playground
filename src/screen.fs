@@ -6,10 +6,17 @@ in vec2 TexCoords;
 uniform float offset_x;
 uniform float offset_y;
 
-uniform sampler2D screenTexture;
-uniform sampler2D bloomBlur;
+uniform sampler2D screenTexture;     // TEXTURE0: HDR 原图
+uniform sampler2D bloomBlur;         // TEXTURE1: 物理泛光图
+uniform sampler2D dirtMaskTexture;   // TEXTURE2: 镜头污渍贴图 (黑底白灰尘)
 
 uniform float exposure;
+
+// --- 艺术控制参数 ---
+// 泛光强度 (建议 0.03 ~ 0.15 之间)
+uniform float bloomStrength = 0.05; 
+// 污渍显示强度 (控制灰尘被照亮时的明显程度)
+uniform float dirtMaskIntensity = 5.0; 
 
 uniform bool bloom;
 
@@ -58,7 +65,9 @@ void main()
     if(bloom)
     {
         vec3 bloomColor = texture(bloomBlur, TexCoords).rgb;
-        col += bloomColor;
+        vec3 dirtMask = texture(dirtMaskTexture, TexCoords).rgb * dirtMaskIntensity;
+        vec3 bloomWithDirt = bloomColor + (bloomColor * dirtMask);
+        col += bloomWithDirt * bloomStrength;
     }
 
     col *= exposure; // 曝光调整

@@ -10,13 +10,13 @@
 #include "FPSCounter.h"
 #include "Skybox.h"
 #include "SkyboxHelper.h"
+#include "PhysicallyBasedBloom.h"
 
 #include <glm.hpp>
 #include <gtc/matrix_transform.hpp>
 #include <gtc/type_ptr.hpp>
 
 // 1. 这里写窗口大小改变的回调函数 (framebuffer_size_callback)
-unsigned int loadCubemap(std::vector<std::string> faces);
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow *window);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
@@ -80,20 +80,14 @@ unsigned int SCR_HEIGHT = 600;
 
 // MSAA FBO: 用于渲染 3D 场景 (抗锯齿)
 unsigned int msaaFBO;
-unsigned int textureColorBufferMultiSampled[2]; // MSAA 纹理数组 (0:场景, 1:亮部)
+unsigned int textureColorBufferMultiSampled[1]; // MSAA 纹理数组 (0:场景, 1:亮部)
 unsigned int rboMultiSampled;                // MSAA 深度缓冲
 
 // Intermediate FBO: 用于接收 MSAA 还原后的普通图像 (做后处理)
 unsigned int intermediateFBO;
-unsigned int screenTexture[2];                  // 普通纹理数组 (0:场景, 1:亮部)
-
-unsigned int pingpongFBO[2];
-unsigned int pingpongTexture[2];
+unsigned int screenTexture[1];                  // 普通纹理数组 (0:场景, 1:亮部)
 
 unsigned int floorVAO;
-
-unsigned int sphereVAO;      //渲染球体
-unsigned int indexCount;
 
 unsigned int normalMapVAO;
 unsigned int normalMapVBO;
@@ -208,6 +202,9 @@ int main() {
     loadTexture matel_disp("../extern/Green Metal Rust/green_metal_rust_disp_2k.png", false);
     loadTexture matel_matel("../extern/Green Metal Rust/green_metal_rust_arm_2k.png", false);
 
+    // Lens Dirt
+    loadTexture Lens_Dirt("../extern/Lens Dirt/lens_dirt.jpg", false);
+
     PBRMaterial pavementMat = {pavement_diff, pavement_nor_gl, pavement_disp, pavement_matel};
     PBRMaterial marbleMat = {marble_diff, marble_nor_gl, marble_disp, marble_matel};
     PBRMaterial fabricMat = {fabric_diff, fabric_nor_gl, fabric_disp, fabric_matel};
@@ -263,7 +260,7 @@ int main() {
     glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
 
     // texture
-    glGenTextures(2, textureColorBufferMultiSampled);
+    glGenTextures(1, textureColorBufferMultiSampled);
     for(unsigned int i = 0; i < 2; i++)
     {
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled[i]);
@@ -281,8 +278,7 @@ int main() {
 
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rboMultiSampled);
 
-    unsigned int attachments[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
-    glDrawBuffers(2, attachments);
+    unsigned int attachments[1] = { GL_COLOR_ATTACHMENT0 };
 
     if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         std::cout << "ERROR::FRAMEBUFFER:: MSAA Framebuffer is not complete!" << std::endl;
@@ -292,18 +288,16 @@ int main() {
     glGenFramebuffers(1, &intermediateFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, intermediateFBO);
 
-    glGenTextures(2, screenTexture);
-    for(unsigned int i = 0; i < 2; i++)
-    {
-        glBindTexture(GL_TEXTURE_2D, screenTexture[i]);
+    glGenTextures(1, screenTexture);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, screenTexture[i], 0);
-    }
+    glBindTexture(GL_TEXTURE_2D, screenTexture[0]);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, screenTexture[0], 0);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         std::cout << "ERROR::FRAMEBUFFER:: Intermediate Framebuffer is not complete!" << std::endl;
@@ -356,21 +350,6 @@ int main() {
         throw 0;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    // pingpong render
-    glGenFramebuffers(2, pingpongFBO);
-    glGenTextures(2, pingpongTexture);
-    for(unsigned int i = 0; i < 2; i++)
-    {
-        glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[i]);
-        glBindTexture(GL_TEXTURE_2D, pingpongTexture[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pingpongTexture[i], 0);
-    }
 
     // hdr Texture
     stbi_set_flip_vertically_on_load(true);
@@ -570,6 +549,13 @@ int main() {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, brdfLUTTexture, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    BloomRenderer bloomRenderer;
+    bloomRenderer.Init(SCR_WIDTH, SCR_HEIGHT);
+
+    // 23. 解绑 VBO (可选，是个好习惯)
+    // ...
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
     debugShader.use();
     debugShader.setInt("debugTexture", 0);
 
@@ -598,6 +584,7 @@ int main() {
     screenShader.use();
     screenShader.setInt("screenTexture", 0);
     screenShader.setInt("bloomBlur", 1);
+    screenShader.setInt("dirtMaskTexture", 2);
 
     glBindVertexArray(0);
 
@@ -771,33 +758,14 @@ int main() {
         glDrawBuffer(GL_COLOR_ATTACHMENT0); // 往 Intermediate 的 0 号写
         glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-        // --- 第二搬：搬运亮部区域 ---
-        glReadBuffer(GL_COLOR_ATTACHMENT1); // 从 MSAA 的 1 号读
-        glDrawBuffer(GL_COLOR_ATTACHMENT1); // 往 Intermediate 的 1 号写
-        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-        // 解绑 MSAA FBO，因为我们现在要处理的是 intermediateFBO 里的纹理
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        // 高斯模糊处理
-        bool horizontal = true;
-        bool first_iteration = true;
-        unsigned int amount = 10;
-        gaussianBlurShader.use();
-        for(unsigned int i = 0; i < amount; i++)
-        {
-            glBindFramebuffer(GL_FRAMEBUFFER, pingpongFBO[horizontal]);
-            gaussianBlurShader.setBool("horizontal", horizontal);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, first_iteration ? screenTexture[1] : pingpongTexture[!horizontal]);
-            renderScreenQuad();
-            horizontal = !horizontal;
-            if(first_iteration)
-                first_iteration = false;
-        }
-
         // 恢复默认状态
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        if (bloom) 
+        {
+            // 0.005f 是 filterRadius，可以自己在代码里调整大小看效果
+            bloomRenderer.RenderBloomTexture(screenTexture[0], 0.005f); 
+        }
 
         glDisable(GL_DEPTH_TEST);
         glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
@@ -834,7 +802,9 @@ int main() {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, screenTexture[0]); // 场景
             glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, pingpongTexture[!horizontal]); // 泛光
+            // 如果开启了 Bloom，绑定物理泛光贴图，否则可以随便绑个黑色的或不处理
+            glBindTexture(GL_TEXTURE_2D, bloom ? bloomRenderer.BloomTexture() : 0);
+            Lens_Dirt.bind(2);
 
             // 只有正常模式才需要画这个全屏四边形
             renderScreenQuad(); 
@@ -986,14 +956,6 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
         glBindRenderbuffer(GL_RENDERBUFFER, rboMultiSampled);
         glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH24_STENCIL8, width, height);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
-
-        // 3. ✅ 新增：Resize 乒乓缓冲 (Bloom 模糊专用)
-        for (unsigned int i = 0; i < 2; i++)
-        {
-            glBindTexture(GL_TEXTURE_2D, pingpongTexture[i]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, NULL);
-        }
-        glBindTexture(GL_TEXTURE_2D, 0);
 
         // 打印一下日志，让你知道它在工作
         std::cout << "Window Resized: All FBOs (MSAA, Screen, PingPong) Updated to " << width << "x" << height << std::endl;
@@ -1327,6 +1289,9 @@ std::vector<glm::mat4> getLightSpaceMatrices()
 
 void renderSphere()
 {
+    static unsigned int sphereVAO;
+    static unsigned int indexCount;
+
     if(sphereVAO == 0)
     {
         glGenVertexArrays(1, &sphereVAO);
