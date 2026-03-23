@@ -78,14 +78,14 @@ void renderScene(const Shader &shader, const PBRMaterial& pavementMat, const PBR
 unsigned int SCR_WIDTH = 800;
 unsigned int SCR_HEIGHT = 600;
 
-// MSAA FBO: 用于渲染 3D 场景 (抗锯齿)
-unsigned int msaaFBO;
-unsigned int textureColorBufferMultiSampled[1]; // MSAA 纹理数组 (0:场景, 1:亮部)
-unsigned int rboMultiSampled;                // MSAA 深度缓冲
-
 // Intermediate FBO: 用于接收 MSAA 还原后的普通图像 (做后处理)
-unsigned int intermediateFBO;
-unsigned int screenTexture[1];                  // 普通纹理数组 (0:场景, 1:亮部)
+unsigned int hdrFBO;
+unsigned int hdrRBO;
+
+unsigned int screenTexture[1];                  // 普通纹理数组 (0:场景)
+
+unsigned int gPosition, gNormal, gAlbedo_parallaxShadow, gORM;
+unsigned int gRbo;
 
 unsigned int floorVAO;
 
@@ -129,6 +129,8 @@ std::vector<float> shadowCascadeLevels{cameraFarPlane / 25.0f, cameraFarPlane / 
 const glm::vec3 lightColor = glm::vec3(1.0f, 1.0f, 1.0f);
 
 const glm::vec3 lightDir = glm::normalize(glm::vec3(20.0f, 50.0f, 20.0f));
+
+BloomRenderer bloomRenderer;
 
 int main() {
 
@@ -177,6 +179,9 @@ int main() {
     Shader brdfShader("../src/brdf.vs", "../src/brdf.fs");
     Shader debugShader("../src/screen.vs", "../src/debug.fs");
     Shader glassballShader("../src/glass_ball.vs", "../src/glass_ball.fs");
+    Shader gBufferShader("../src/g_buffer.vs", "../src/g_buffer.fs");
+    Shader deferredPurePBRShader("../src/deferred_pure_pbr.vs", "../src/deferred_pure_pbr.fs");
+    Shader postProcessShader("../src/screen.vs", "../src/post_processing.fs");
 
     // pavement
     loadTexture pavement_diff("../extern/Pavement/pavement_02_diff_2k.jpg", true);
@@ -237,59 +242,80 @@ int main() {
     -100.0f, -2.0f, -100.0f,  0.0f, 1.0f, 0.0f,    0.0f, 100.0f,   1.0f, 0.0f, 0.0f,   0.0f, 0.0f, 1.0f  // 左上
 };
 
-    unsigned int uniformBlockIndexourShader = glGetUniformBlockIndex(ourShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexshinerShader = glGetUniformBlockIndex(shiner.ProgramID, "Matrices");
-    unsigned int uniformBlockIndexpurePBRShader_matrices = glGetUniformBlockIndex(purePBRShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexdeferredPurePBRShader_matrices = glGetUniformBlockIndex(deferredPurePBRShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexbackgroundShader = glGetUniformBlockIndex(backgroundShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexglassballShader = glGetUniformBlockIndex(glassballShader.ProgramID, "Matrices");
 
     unsigned int uniformBlockIndexcsmShadowDepthShader = glGetUniformBlockIndex(csmShadowDepthShader.ProgramID, "LightSpaceMatrices");
-    unsigned int uniformBlockIndexpurePBRShader_light = glGetUniformBlockIndex(purePBRShader.ProgramID, "LightSpaceMatrices");
+    unsigned int uniformBlockIndexdeferredPurePBRShader_light = glGetUniformBlockIndex(deferredPurePBRShader.ProgramID, "LightSpaceMatrices");
 
-    glUniformBlockBinding(ourShader.ProgramID, uniformBlockIndexourShader, 0);
     glUniformBlockBinding(shiner.ProgramID, uniformBlockIndexshinerShader, 0);
-    glUniformBlockBinding(purePBRShader.ProgramID, uniformBlockIndexpurePBRShader_matrices, 0);
+    glUniformBlockBinding(deferredPurePBRShader.ProgramID, uniformBlockIndexdeferredPurePBRShader_matrices, 0);
     glUniformBlockBinding(backgroundShader.ProgramID, uniformBlockIndexbackgroundShader, 0);
     glUniformBlockBinding(glassballShader.ProgramID, uniformBlockIndexglassballShader, 0);
 
     glUniformBlockBinding(csmShadowDepthShader.ProgramID, uniformBlockIndexcsmShadowDepthShader, 1);
-    glUniformBlockBinding(purePBRShader.ProgramID, uniformBlockIndexpurePBRShader_light, 1);
+    glUniformBlockBinding(deferredPurePBRShader.ProgramID, uniformBlockIndexdeferredPurePBRShader_light, 1);
 
-    // MSAA Framebuffer
-    glGenFramebuffers(1, &msaaFBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
+    // G-buffer
+    unsigned int gBuffer;
+    glGenFramebuffers(1, &gBuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
 
-    // texture
-    glGenTextures(1, textureColorBufferMultiSampled);
-    for(unsigned int i = 0; i < 2; i++)
-    {
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled[i]);
-        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, GL_TRUE);
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);    
+    // 1. 位置颜色缓冲 (使用 16F 保证精度)
+    glGenTextures(1, &gPosition);
+    glBindTexture(GL_TEXTURE_2D, gPosition);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gPosition, 0);
 
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled[i], 0);
-    }
+    // 2. 法线颜色缓冲 (使用 16F 保证法线精度，防止光照出现条带)
+    glGenTextures(1, &gNormal);
+    glBindTexture(GL_TEXTURE_2D, gNormal);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gNormal, 0);
 
-    // rbo
-    glGenRenderbuffers(1, &rboMultiSampled);
-    glBindRenderbuffer(GL_RENDERBUFFER, rboMultiSampled);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH24_STENCIL8, SCR_WIDTH, SCR_HEIGHT);
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    // 3. 颜色和视差阴影缓冲 (RGBA，普通精度即可)
+    glGenTextures(1, &gAlbedo_parallaxShadow);
+    glBindTexture(GL_TEXTURE_2D, gAlbedo_parallaxShadow);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gAlbedo_parallaxShadow, 0);
 
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rboMultiSampled);
+    // 4. PBR 参数缓冲 ORM (RGB，普通精度即可)
+    glGenTextures(1, &gORM);
+    glBindTexture(GL_TEXTURE_2D, gORM);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, gORM, 0);
 
-    unsigned int attachments[1] = { GL_COLOR_ATTACHMENT0 };
+    // 告诉 OpenGL 我们要渲染到这 4 个附件
+    unsigned int attachments[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
+    glDrawBuffers(4, attachments);
 
-    if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-        std::cout << "ERROR::FRAMEBUFFER:: MSAA Framebuffer is not complete!" << std::endl;
+    // gRbo
+    glGenRenderbuffers(1, &gRbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, gRbo);
+
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, SCR_WIDTH, SCR_HEIGHT);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, gRbo);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cout << "Framebuffer not complete!" << std::endl;
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // Intermediate Framebuffer
-    glGenFramebuffers(1, &intermediateFBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, intermediateFBO);
+    // hdr Framebuffer
+    glGenFramebuffers(1, &hdrFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
 
     glGenTextures(1, screenTexture);
-
     glBindTexture(GL_TEXTURE_2D, screenTexture[0]);
 
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
@@ -298,6 +324,13 @@ int main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, screenTexture[0], 0);
+
+    // 🔥 新增：给 hdrFBO 挂载一个深度 RBO，专门用来接收 G-Buffer Blit 过来的深度
+    glGenRenderbuffers(1, &hdrRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, hdrRBO);
+    // 使用 GL_DEPTH_COMPONENT24 精度一般就够了，如果需要更精确可以用 GL_DEPTH_COMPONENT32F
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, SCR_WIDTH, SCR_HEIGHT);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, hdrRBO);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         std::cout << "ERROR::FRAMEBUFFER:: Intermediate Framebuffer is not complete!" << std::endl;
@@ -351,15 +384,15 @@ int main() {
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // hdr Texture
+    // equirectangularMap
     stbi_set_flip_vertically_on_load(true);
     int width, height, nrComponents;
     float *data = stbi_loadf("../src/church_meeting_room_4k.hdr", &width, &height, &nrComponents, 0);
-    unsigned int hdrTexture;
+    unsigned int equirectangularMap;
     if (data)
     {
-        glGenTextures(1, &hdrTexture);
-        glBindTexture(GL_TEXTURE_2D, hdrTexture);
+        glGenTextures(1, &equirectangularMap);
+        glBindTexture(GL_TEXTURE_2D, equirectangularMap);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, data); 
 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -413,7 +446,7 @@ int main() {
     equirectangularToCubemapShader.setInt("equirectangularMap", 0);
     equirectangularToCubemapShader.setMat4("projection", captureProjection);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, hdrTexture);
+    glBindTexture(GL_TEXTURE_2D, equirectangularMap);
 
     glViewport(0, 0, 512, 512);
 
@@ -549,11 +582,27 @@ int main() {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, brdfLUTTexture, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    BloomRenderer bloomRenderer;
     bloomRenderer.Init(SCR_WIDTH, SCR_HEIGHT);
 
-    // 23. 解绑 VBO (可选，是个好习惯)
-    // ...
+    // --- 🌟 新增：后期处理中间缓冲 (Post-Process FBO) ---
+    unsigned int postProcessFBO;
+    glGenFramebuffers(1, &postProcessFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, postProcessFBO);
+
+    unsigned int postProcessTexture;
+    glGenTextures(1, &postProcessTexture);
+    glBindTexture(GL_TEXTURE_2D, postProcessTexture);
+    // 注意：这里用 GL_RGB 就够了 (普通 8 位精度)，因为经过 ToneMapping 后它已经是 LDR 颜色了
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, postProcessTexture, 0);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cout << "ERROR::FRAMEBUFFER:: PostProcess Framebuffer is not complete!" << std::endl;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 解绑 VBO (可选，是个好习惯)
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     debugShader.use();
@@ -564,44 +613,50 @@ int main() {
 
     csmShadowDepthShader.use();
 
-    purePBRShader.use();
-    purePBRShader.setInt("albedoMap", 0);
-    purePBRShader.setInt("normalMap", 1);
-    purePBRShader.setInt("depthMap", 2);
-    purePBRShader.setInt("metallicMap", 3);
-    purePBRShader.setInt("roughnessMap", 4);
-    purePBRShader.setInt("aoMap", 5);
-    purePBRShader.setInt("irradianceMap", 6);
-    purePBRShader.setInt("prefilterMap", 7);
-    purePBRShader.setInt("brdfLUT", 8);
-    purePBRShader.setInt("shadowMap", 10);
+    gBufferShader.use();
+    gBufferShader.setInt("albedoMap", 0);
+    gBufferShader.setInt("normalMap", 1);
+    gBufferShader.setInt("depthMap", 2);
+    gBufferShader.setInt("metallicMap", 3);
+    gBufferShader.setInt("roughnessMap", 4);
+    gBufferShader.setInt("aoMap", 5);
+
+    deferredPurePBRShader.use();
+    deferredPurePBRShader.setInt("gPosition", 0);
+    deferredPurePBRShader.setInt("gNormal", 1);
+    deferredPurePBRShader.setInt("gAlbedo_parallaxShadow", 2);
+    deferredPurePBRShader.setInt("gORM", 3);
+    deferredPurePBRShader.setInt("irradianceMap", 6);
+    deferredPurePBRShader.setInt("prefilterMap", 7);
+    deferredPurePBRShader.setInt("brdfLUT", 8);
+    deferredPurePBRShader.setInt("shadowMap", 10);
 
     glassballShader.use();
     glassballShader.setInt("irradianceMap", 0);
     glassballShader.setInt("prefilterMap", 1);
     glassballShader.setInt("brdfLUT", 2);
 
+    postProcessShader.use();
+    postProcessShader.setInt("screenTexture", 0);
+    postProcessShader.setInt("bloomBlur", 1);
+    postProcessShader.setInt("dirtMaskTexture", 2);
+
     screenShader.use();
     screenShader.setInt("screenTexture", 0);
-    screenShader.setInt("bloomBlur", 1);
-    screenShader.setInt("dirtMaskTexture", 2);
 
+    // 解绑 VAO
     glBindVertexArray(0);
 
     // --- 渲染循环 ---
     while (!glfwWindowShouldClose(window))
     {
-
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
         processInput(window);
 
-        glClearColor(0.01f, 0.01f, 0.01f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glEnable(GL_DEPTH_TEST);
-
+        // 更新 UBO (矩阵)
         const auto lightMatrices = getLightSpaceMatrices();
         glBindBuffer(GL_UNIFORM_BUFFER, lightUboMatrices);
         for(size_t i = 0; i < lightMatrices.size(); i++)
@@ -610,14 +665,23 @@ int main() {
         }
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
+        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 500.0f);
+        glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(glm::mat4), glm::value_ptr(projection));
+
+        glm::mat4 view = camera.GetViewMatrix();
+        glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
+        glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+        // 🌟 Pass 1: 定向光阴影贴图 (CSM Shadow Pass)
         glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
         glBindFramebuffer(GL_FRAMEBUFFER, lightFBO);
-
+        glClearColor(0.01f, 0.01f, 0.01f, 1.0f);
         glClear(GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
 
         csmShadowDepthShader.use();
-
-        // glCullFace(GL_FRONT);
 
         renderScene(csmShadowDepthShader, pavementMat, marbleMat, fabricMat, greenmatelMat);
 
@@ -629,45 +693,49 @@ int main() {
         csmShadowDepthShader.setMat4("model", modelGlass);
         renderSphere();
 
-        // glCullFace(GL_BACK);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, msaaFBO);
-
+        // 🌟 Pass 2: 几何阶段 (G-Buffer Geometry Pass)
         glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+        glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
         glClearColor(0.01f, 0.01f, 0.01f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_DEPTH_TEST);
 
-        ourShader.use();
+        gBufferShader.use();
+
+        gBufferShader.setFloat("height_scale", 0.1f);
+        gBufferShader.setBool("useParallax", false);
+
+        renderScene(gBufferShader, pavementMat, marbleMat, fabricMat, greenmatelMat);
+
+        // 🌟 Pass 3: 光照阶段 (Deferred Lighting Pass)
+        glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
+
+        deferredPurePBRShader.use();
+
+        // 绑定 G-Buffer 纹理全家桶
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, gPosition);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, gNormal);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, gAlbedo_parallaxShadow);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, gORM);
 
         glm::mat4 model = glm::mat4(1.0f);
-        ourShader.setMat4("model", model);
+        deferredPurePBRShader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+        deferredPurePBRShader.setBool("blinn", blinn);
 
-        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 500.0f);
-        glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
-        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(glm::mat4), glm::value_ptr(projection));
+        deferredPurePBRShader.setVec3("viewPos", camera.Position);
+        deferredPurePBRShader.setVec3("lightDir", lightDir);
+        deferredPurePBRShader.setVec3("lightColor", lightColor * 5.0f);
 
-        glm::mat4 view = camera.GetViewMatrix();
-        glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
-        glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
-
-        purePBRShader.use();
-
-        purePBRShader.setMat3("NormalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
-
-        purePBRShader.setVec3("viewPos", camera.Position);
-        purePBRShader.setVec3("lightDir", lightDir);
-        purePBRShader.setVec3("lightColor", lightColor * 5.0f);
-
-        purePBRShader.setBool("blinn", blinn);
-        purePBRShader.setFloat("far_plane", cameraFarPlane);
-        purePBRShader.setFloat("height_scale", 0.1f);
-        purePBRShader.setBool("useParallax", false);
-
-        purePBRShader.setInt("cascadeCount", static_cast<int>(shadowCascadeLevels.size()));
+        deferredPurePBRShader.setInt("cascadeCount", static_cast<int>(shadowCascadeLevels.size()));
         for (size_t i = 0; i < shadowCascadeLevels.size(); ++i)
         {
-            purePBRShader.setFloat("cascadePlaneDistances[" + std::to_string(i) + "]", shadowCascadeLevels[i]);
+            deferredPurePBRShader.setFloat("cascadePlaneDistances[" + std::to_string(i) + "]", shadowCascadeLevels[i]);
         }
 
         glActiveTexture(GL_TEXTURE6);
@@ -680,47 +748,19 @@ int main() {
         glActiveTexture(GL_TEXTURE10);
         glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps);
 
-        renderScene(purePBRShader, pavementMat, marbleMat, fabricMat, greenmatelMat);
+        renderScreenQuad();
 
-        glassballShader.use();
+        // 🌟 Pass 4: 深度拷贝 (Depth Blit) - 极其重要的一步！
+        // 因为前面的光照阶段是在 2D 矩形上画的，hdrFBO 里没有场景的深度信息。
+        // 如果现在直接画天空盒和玻璃，它们会覆盖掉前面的物体。
+        // 所以要把 gBuffer 的深度强行“复制”给 hdrFBO。
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hdrFBO);
+        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, prefilterMap);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, brdfLUTTexture);
-
-        // ==========================================
-        // 🔴 渲染球体 1：完美镜面球 (Mirror)
-        // ==========================================
-        glassballShader.setInt("u_MaterialType", 0); // 启用标准 PBR 模式
-        glassballShader.setVec3("u_AlbedoVal", glm::vec3(1.0f, 1.0f, 1.0f)); // 银白色
-        glassballShader.setFloat("u_MetallicVal", 1.0f);   // 纯金属！
-        glassballShader.setFloat("u_RoughnessVal", 0.0f);  // 极其光滑！
-
-        glassballShader.setVec3("camPos", camera.Position);
-
-        // 设置模型矩阵位置，向左平移
-        modelMirror = glm::translate(glm::mat4(1.0f), glm::vec3(-2.5f, 1.0f, 0.0f));
-        glassballShader.setMat4("model", modelMirror);
-        renderSphere();
-
-        // ==========================================
-        // 🔵 渲染球体 2：色散水晶玻璃球 (Glass)
-        // ==========================================
-        glassballShader.setInt("u_MaterialType", 1); // 启用高级玻璃模式
-        // 玻璃本身颜色，vec3(1)是纯净玻璃，vec3(0.9, 1.0, 0.9)会有种可口可乐玻璃瓶的微绿色
-        glassballShader.setVec3("u_AlbedoVal", glm::vec3(1.0f, 1.0f, 1.0f)); 
-        // 玻璃是绝缘体，不需要传 Metallic 和 Roughness，因为在 Shader 中写死了
-        // (如果想要磨砂玻璃，可以在 Shader 的折射部分引入 Roughness 采样高 Lod 的环境图)
-        glassballShader.setFloat("u_MetallicVal", 0.0f); 
-        glassballShader.setFloat("u_RoughnessVal", 0.0f);
-
-        // 设置模型矩阵位置，向右平移
-        modelGlass = glm::translate(glm::mat4(1.0f), glm::vec3(2.5f, 1.0f, 0.0f));
-        glassballShader.setMat4("model", modelGlass);
-        renderSphere();
+        // 🌟 Pass 5: 前向渲染阶段 (Forward Pass)
+        glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+        glEnable(GL_DEPTH_TEST); // 恢复深度测试
 
         shiner.use();
 
@@ -737,6 +777,42 @@ int main() {
 
         renderSphere();
 
+        glassballShader.use();
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, prefilterMap);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, brdfLUTTexture);
+
+        // 🔴 渲染球体 1：完美镜面球 (Mirror)
+        glassballShader.setInt("u_MaterialType", 0); // 启用标准 PBR 模式
+        glassballShader.setVec3("u_AlbedoVal", glm::vec3(1.0f, 1.0f, 1.0f)); // 银白色
+        glassballShader.setFloat("u_MetallicVal", 1.0f);   // 纯金属！
+        glassballShader.setFloat("u_RoughnessVal", 0.0f);  // 极其光滑！
+
+        glassballShader.setVec3("camPos", camera.Position);
+
+        // 设置模型矩阵位置，向左平移
+        modelMirror = glm::translate(glm::mat4(1.0f), glm::vec3(-2.5f, 1.0f, 0.0f));
+        glassballShader.setMat4("model", modelMirror);
+        renderSphere();
+
+        // 🔵 渲染球体 2：色散水晶玻璃球 (Glass)
+        glassballShader.setInt("u_MaterialType", 1); // 启用高级玻璃模式
+        // 玻璃本身颜色，vec3(1)是纯净玻璃，vec3(0.9, 1.0, 0.9)会有种可口可乐玻璃瓶的微绿色
+        glassballShader.setVec3("u_AlbedoVal", glm::vec3(1.0f, 1.0f, 1.0f)); 
+        // 玻璃是绝缘体，不需要传 Metallic 和 Roughness，因为在 Shader 中写死了
+        // (如果想要磨砂玻璃，可以在 Shader 的折射部分引入 Roughness 采样高 Lod 的环境图)
+        glassballShader.setFloat("u_MetallicVal", 0.0f); 
+        glassballShader.setFloat("u_RoughnessVal", 0.0f);
+
+        // 设置模型矩阵位置，向右平移
+        modelGlass = glm::translate(glm::mat4(1.0f), glm::vec3(2.5f, 1.0f, 0.0f));
+        glassballShader.setMat4("model", modelGlass);
+        renderSphere();
+
         backgroundShader.use();
 
         glDepthFunc(GL_LEQUAL);
@@ -749,17 +825,8 @@ int main() {
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
 
-        // 绑定读(MSAA) 和 写(中间)
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, msaaFBO);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, intermediateFBO);
-
-        // --- 第一搬：搬运正常场景 ---
-        glReadBuffer(GL_COLOR_ATTACHMENT0); // 从 MSAA 的 0 号读
-        glDrawBuffer(GL_COLOR_ATTACHMENT0); // 往 Intermediate 的 0 号写
-        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-        // 恢复默认状态
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        // 🌟 Pass 6: 后期处理阶段 (Post-Processing)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0); // 回到默认屏幕缓冲
 
         if (bloom) 
         {
@@ -786,41 +853,61 @@ int main() {
             debugShader.use();
 
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, brdfLUTTexture); // 绑上你的 BRDF 贴图
+            glBindTexture(GL_TEXTURE_2D, brdfLUTTexture); // 绑上 BRDF 贴图
 
             renderScreenQuad();
         }
         else {
-            // --- 🎨 正常模式：渲染带后处理的场景 ---
-            screenShader.use();
-            screenShader.setFloat("offset_x", 1.0f / SCR_WIDTH);
-            screenShader.setFloat("offset_y", 1.0f / SCR_HEIGHT);
+            // --- 🎨 正常后期处理 (ToneMapping + Gamma + Bloom合成) ---
+            // 目标：渲染到我们刚才新建的 postProcessFBO 里
+            glBindFramebuffer(GL_FRAMEBUFFER, postProcessFBO); 
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
 
-            screenShader.setFloat("exposure", 1.0f);
-            screenShader.setBool("bloom", bloom);
+            postProcessShader.use();
+            postProcessShader.setFloat("offset_x", 1.0f / SCR_WIDTH);
+            postProcessShader.setFloat("offset_y", 1.0f / SCR_HEIGHT);
+            postProcessShader.setFloat("exposure", 1.0f);
+            postProcessShader.setBool("bloom", bloom);
 
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, screenTexture[0]); // 场景
+            glBindTexture(GL_TEXTURE_2D, screenTexture[0]); // 原始 HDR 场景
             glActiveTexture(GL_TEXTURE1);
-            // 如果开启了 Bloom，绑定物理泛光贴图，否则可以随便绑个黑色的或不处理
-            glBindTexture(GL_TEXTURE_2D, bloom ? bloomRenderer.BloomTexture() : 0);
-            Lens_Dirt.bind(2);
+            glBindTexture(GL_TEXTURE_2D, bloom ? bloomRenderer.BloomTexture() : 0); // 泛光
+            Lens_Dirt.bind(2); // 镜头污渍
 
-            // 只有正常模式才需要画这个全屏四边形
-            renderScreenQuad(); 
+            renderScreenQuad(); // 此时 postProcessTexture 已经被填满了 LDR 画面
+
+            // --- 🖥️ 屏幕输出阶段 (FXAA 抗锯齿上屏) ---
+            // 目标：回到默认的电脑屏幕缓冲 (0)
+            glBindFramebuffer(GL_FRAMEBUFFER, 0); 
+            glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            screenShader.use(); 
+            // 传给 FXAA 计算像素偏移用的
+            screenShader.setFloat("offset_x", 1.0f / SCR_WIDTH); 
+            screenShader.setFloat("offset_y", 1.0f / SCR_HEIGHT);
+
+            glActiveTexture(GL_TEXTURE0);
+            // ⚠️ 关键点：这里绑定的不再是 HDR 场景，而是上一步生成的 postProcessTexture！
+            glBindTexture(GL_TEXTURE_2D, postProcessTexture); 
+
+            renderScreenQuad(); // 最后一次绘制，完美丝滑无锯齿的画面上屏！
         }
 
         glEnable(GL_DEPTH_TEST);
 
         fpsCounter.update(window);
 
+        // 交换缓冲 (SwapBuffers)
         glfwSwapBuffers(window);
+        // 处理事件 (PollEvents)
         glfwPollEvents();
     }
-    glDeleteRenderbuffers(1, &rboMultiSampled);
-    glDeleteFramebuffers(1, &msaaFBO);
-    glDeleteFramebuffers(1, &intermediateFBO);
-    
+    // 释放资源 (Delete VAO/VBO/Program)
+
+    // 结束 GLFW
     glfwTerminate();
 
     return 0;
@@ -931,40 +1018,54 @@ void processInput(GLFWwindow *window)
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {
+    // 防止窗口最小化时 width 和 height 为 0 导致 OpenGL 崩溃
+    if (width == 0 || height == 0) return;
+
     SCR_WIDTH = width;
     SCR_HEIGHT = height;
+
     // 1. 基础操作：调整 OpenGL 视口
     glViewport(0, 0, width, height);
 
-    // 2. 进阶操作：重新分配 FBO 的纹理大小 (Resizing Texture)
-    // 只有当 width 和 height 大于 0 时才执行 (防止最小化窗口时崩溃)
-    if (width > 0 && height > 0)
+    // 2. 核心操作：重置所有 G-Buffer 纹理大小
+    glBindTexture(GL_TEXTURE_2D, gPosition);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, NULL);
+
+    glBindTexture(GL_TEXTURE_2D, gNormal);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, NULL);
+
+    glBindTexture(GL_TEXTURE_2D, gAlbedo_parallaxShadow);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+    glBindTexture(GL_TEXTURE_2D, gORM);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+
+    // 3. 重置 G-Buffer 的深度 RBO
+    glBindRenderbuffer(GL_RENDERBUFFER, gRbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, width, height);
+
+    // 4. 重置 HDR 前向渲染 FBO 纹理与深度 RBO
+    for(unsigned int i = 0; i < 2; i++)
     {
-        // 1. Resize Intermediate FBO (普通纹理)
-        // 2. Resize MSAA FBO (多重采样纹理 + RBO)
-        for(unsigned int i = 0; i < 2; i++)
-        {
-            glBindTexture(GL_TEXTURE_2D, screenTexture[i]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-
-            glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, textureColorBufferMultiSampled[i]);
-            glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGB16F, width, height, GL_TRUE);
-        }
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
-
-        glBindRenderbuffer(GL_RENDERBUFFER, rboMultiSampled);
-        glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH24_STENCIL8, width, height);
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
-
-        // 打印一下日志，让你知道它在工作
-        std::cout << "Window Resized: All FBOs (MSAA, Screen, PingPong) Updated to " << width << "x" << height << std::endl;
+        glBindTexture(GL_TEXTURE_2D, screenTexture[i]);
+        // 💡 提示：GL_RGB16F 最好搭配 GL_FLOAT 数据类型使用，而不是 GL_UNSIGNED_BYTE
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, width, height, 0, GL_RGB, GL_FLOAT, NULL);
     }
+
+    glBindRenderbuffer(GL_RENDERBUFFER, hdrRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+
+    // 5. 重置 Bloom 渲染器
+    bloomRenderer.Init(width, height);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    std::cout << "Window Resized: All Deferred/HDR FBOs Updated to " << width << "x" << height << std::endl;
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
-
     if(!isMouseCaptured) return;
 
     if(firstMouse)
