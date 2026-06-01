@@ -66,6 +66,55 @@ public:
         glBindVertexArray(0);
     }
 
+    void DrawPBR(const Shader& shader) const
+    {
+        bool hasDiffuse = false;
+        bool hasNormal = false;
+        
+        // 自动桥接 Assimp 读取出来的贴图，喂给我们的 G-Buffer Shader
+        for(unsigned int i = 0; i < textures.size(); i++)
+        {
+            glActiveTexture(GL_TEXTURE0 + i);
+            std::string name = textures[i].type;
+            
+            if(name == "texture_diffuse") {
+                shader.setInt("albedoMap", i);
+                shader.setBool("useAlbedoMap", true);
+                hasDiffuse = true;
+            }
+            else if(name == "texture_normal" || name == "texture_height") {
+                shader.setInt("normalMap", i);
+                shader.setBool("useNormalMap", true);
+                hasNormal = true;
+            }
+            glBindTexture(GL_TEXTURE_2D, textures[i].id);
+        }
+        
+        // 如果模型缺少贴图，给它一个安全的默认值防止黑屏
+        if(!hasDiffuse) {
+            shader.setBool("useAlbedoMap", false);
+            shader.setVec3("albedoValue", glm::vec3(0.5f)); // 默认灰色
+        }
+        if(!hasNormal) {
+            shader.setBool("useNormalMap", false);
+        }
+        
+        // 关闭特殊的 ORM 贴图，使用模型自带的标准材质
+        shader.setBool("usePackedMap", false);
+        shader.setBool("useMetalMap", false);
+        shader.setFloat("metalValue", 0.0f);
+        shader.setBool("useRoughnessMap", false);
+        shader.setFloat("roughnessValue", 0.7f); // 默认粗糙一点
+        shader.setBool("useAOMap", false);
+        shader.setFloat("aoValue", 1.0f);
+        shader.setVec2("uvTiling", glm::vec2(1.0f, 1.0f)); // 模型自带 UV 不缩放
+        
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, static_cast<unsigned int>(indices.size()), GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE0);
+    }
+
     // 同时，你还需要一个支持实例化的绘制函数
     void DrawInstanced(Shader& shader, unsigned int amount)
     {
@@ -129,6 +178,14 @@ public:
 
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    // 🌟 [新增] 纯净版绘制：只负责画几何体，不碰任何贴图！
+    void DrawGeometryOnly() const
+    {
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, static_cast<unsigned int>(indices.size()), GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
     }
 private:
     unsigned int VAO, VBO, EBO;

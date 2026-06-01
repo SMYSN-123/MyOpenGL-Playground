@@ -13,7 +13,7 @@ uniform sampler2D dirtMaskTexture;   // TEXTURE2: 镜头污渍贴图 (黑底白�
 uniform float exposure;
 
 // --- 艺术控制参数 ---
-uniform float bloomStrength = 0.05; 
+uniform float bloomStrength = 0.04; 
 uniform float dirtMaskIntensity = 5.0; 
 uniform bool bloom;
 
@@ -65,6 +65,7 @@ void main()
 
     col *= exposure; // 曝光调整
     col = ACESFilm(col); // ACES 色调映射
+
     col = pow(col, vec3(1.0 / 2.2)); // Gamma 校正
 
     // 这个输出会被画到一张中间贴图上，而不是直接上屏幕

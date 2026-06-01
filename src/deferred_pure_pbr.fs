@@ -9,6 +9,23 @@ uniform sampler2D gNormal;
 uniform sampler2D gAlbedo_parallaxShadow;
 uniform sampler2D gORM;
 
+// --- 🌟 [新增] 点光源数据结构 ---
+struct PointLight {
+    vec3 Position;
+    vec3 Color;
+};
+#define MAX_POINT_LIGHTS 32
+uniform PointLight pointLights[MAX_POINT_LIGHTS];
+uniform int activePointLightsCount;
+
+// 🟢 [新增] 引入模糊后的 SSAO 贴图
+uniform sampler2D ssaoTexture;
+
+// 🌧️ [新增] 全局湿度控制 (0.0 完全干燥 -> 1.0 暴雨积水)
+uniform float u_GlobalWetness;
+// 🌧️ [可选新增] 水坑遮罩纹理 (Puddle Mask)，用于让积水随机分布，而不是均匀一层
+uniform sampler2D puddleNoiseMap;
+
 // --- 相机与矩阵 ---
 layout (std140) uniform Matrices
 {
@@ -141,10 +158,15 @@ void main()
     vec3 albedo        = albedo_shadow.rgb;
     float parallaxShadow = albedo_shadow.a;
 
-    vec3 orm       = texture(gORM, TexCoords).rgb;
-    float ao       = orm.r;
-    float roughness= max(orm.g, 0.04); // 避免纯粹的高光除零错误
-    float metallic = clamp(orm.b, 0.0, 1.0);
+    vec4 orm_puddle = texture(gORM, TexCoords);
+
+    float bakedAO  = orm_puddle.r;
+    float ssao     = texture(ssaoTexture, TexCoords).r;
+    float finalAO  = bakedAO * ssao;
+
+    float roughness= max(orm_puddle.g, 0.04); // 避免纯粹的高光除零错误
+    float metallic = clamp(orm_puddle.b, 0.0, 1.0);
+    float puddleMask = orm_puddle.a; // 取出水坑掩码
 
     // 🌟 2. 准备 PBR 需要的向量 (全部都在世界空间下！)
     vec3 V = normalize(viewPos - FragPos);
@@ -155,7 +177,10 @@ void main()
     vec3 F0 = vec3(0.04);
     F0 = mix(F0, albedo, metallic);
 
-    // 🌟 3. 直接光照 (Dir Light)
+    // 🌧️ 光学折射覆写：水是绝缘体，F0 约为 0.02
+    F0 = mix(F0, vec3(0.02), puddleMask);
+
+    // 🌟 3. 主平行光 (月光) 计算
     float attenuation = 1.0;
     vec3 radiance = lightColor * attenuation;
 
@@ -174,7 +199,45 @@ void main()
     float NdotL = max(dot(N, L), 0.0);
     vec3 Lo = (KD * albedo / PI + specular) * radiance * NdotL;
 
-    // 🌟 4. 间接光照 (IBL)
+    // 计算阴影 (只对主平行光生效)
+    vec3 debugCascadeColor = vec3(0.0);
+    float shadow = ShadowCalculation(FragPos, N, debugCascadeColor);
+    float visibility = (1.0 - shadow) * (1.0 - parallaxShadow);
+
+    // 🌟 4. [核心新增] 点光源 (霓虹灯) 循环累加！
+    vec3 Lo_PointLights = vec3(0.0);
+    
+    for(int i = 0; i < activePointLightsCount; ++i)
+    {
+        // 算出点光源的距离和方向
+        vec3 L_pt = normalize(pointLights[i].Position - FragPos);
+        vec3 H_pt = normalize(V + L_pt);
+        float dist = length(pointLights[i].Position - FragPos);
+        
+        // 物理衰减 (防除零)
+        float attenuation = 1.0 / (dist * dist + 1.0);
+        vec3 radiance_pt = pointLights[i].Color * attenuation;
+
+        // PBR 计算
+        vec3 F_pt  = fresnelSchlick(max(dot(H_pt, V), 0.0), F0);
+        float NDF_pt = D_GGX_TR(N, H_pt, roughness);
+        float G_pt   = GeometrySmith(N, V, L_pt, roughness);
+
+        vec3 nominator_pt    = NDF_pt * G_pt * F_pt;
+        float denominator_pt = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L_pt), 0.0) + 0.001;
+        vec3 specular_pt     = nominator_pt / denominator_pt;
+
+        vec3 KS_pt = F_pt;
+        vec3 KD_pt = vec3(1.0) - KS_pt;
+        KD_pt *= 1.0 - metallic;
+
+        float NdotL_pt = max(dot(N, L_pt), 0.0);
+        
+        // 累加这盏灯的能量 (不乘 visibility！点光源不受平行光阴影影响)
+        Lo_PointLights += (KD_pt * albedo / PI + specular_pt) * radiance_pt * NdotL_pt;
+    }
+
+    // 🌟 5. 间接光照 (IBL / 环境光)
     vec3 KS_ambient = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
     vec3 KD_ambient = 1.0 - KS_ambient;
     KD_ambient *= 1.0 - metallic;
@@ -187,18 +250,18 @@ void main()
     vec2 envBRDF = texture(brdfLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
     vec3 specular_ambient = prefilteredColor * (KS_ambient * envBRDF.x + envBRDF.y);
 
-    vec3 ambient = (KD_ambient * diffuse_ambient + specular_ambient) * ao;
+    vec3 ambient = (KD_ambient * diffuse_ambient + specular_ambient) * finalAO;
 
-    // 🌟 5. 阴影计算与最终合成
-    vec3 debugCascadeColor = vec3(0.0);
-    float shadow = ShadowCalculation(FragPos, N, debugCascadeColor);
+    // 🌟 保留 5% 的亮度，并且染上极其微弱的冷灰色（不要用纯蓝！）
+    vec3 nightTint = vec3(0.6, 0.7, 0.8);
+    float nightExposure = 0.05; // 🌟 5% 的亮度
+
+    vec3 finalAmbient = ambient * nightExposure * nightTint;
+
+    // 🌟 6. 终极合成：环境光 + 主光(乘阴影) + 霓虹点光源(全亮)
     
-    // 综合 CSM 阴影和视差自阴影
-    float visibility = (1.0 - shadow) * (1.0 - parallaxShadow);
+    vec3 color = finalAmbient + (Lo * visibility) + Lo_PointLights;
 
-    vec3 color = ambient + Lo * visibility;
-
-    // 🌟 6. 输出最终颜色 (也可以在这里加 HDR 色调映射 Tone Mapping)
     if(DEBUG_CSM_LAYER)
     {
         FragColor = vec4(color * 0.5 + debugCascadeColor * 0.5, 1.0);

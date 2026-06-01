@@ -2,7 +2,7 @@
 layout (location = 0) out vec3 gPosition;
 layout (location = 1) out vec3 gNormal;
 layout (location = 2) out vec4 gAlbedo_parallaxShadow;
-layout (location = 3) out vec3 gORM;
+layout (location = 3) out vec4 gORM; // 借用 Alpha 通道传递水坑遮罩！
 
 in VS_OUT
 {
@@ -26,6 +26,25 @@ uniform sampler2D aoMap;
 uniform float height_scale;
 uniform bool useParallax;
 uniform bool usePackedMap;
+
+// --- 🌟 材质状态开关与纯数字接收 ---
+uniform bool useAlbedoMap;
+uniform vec3 albedoValue;
+
+uniform bool useNormalMap;
+
+uniform bool useMetalMap;    
+uniform float metalValue;    
+
+uniform bool useRoughnessMap;
+uniform float roughnessValue;
+
+uniform bool useAOMap;
+uniform float aoValue;
+
+// 🌧️ [新增] 全局湿度控制与噪音贴图，从光照阶段搬移到这里
+uniform float u_GlobalWetness;
+uniform sampler2D puddleNoiseMap;
 
 vec2 parallaxMapping(vec2 texCoords, vec3 viewDir, vec3 lightDir, out float parallaxShadow)
 {
@@ -141,20 +160,40 @@ vec2 parallaxMapping(vec2 texCoords, vec3 viewDir, vec3 lightDir, out float para
 
 void main()
 {
+    vec2 texCoords = fs_in.TexCoords;
+
     vec3 viewDir_Tangent = normalize(fs_in.TangentViewPos - fs_in.TangentFragPos);
     vec3 lightDir_Tangent = normalize(fs_in.TangentLightDir);
-    
-    vec2 texCoords = fs_in.TexCoords;
+
     float parallaxShadow = 0.0;
     
     if (useParallax)
     {
-        texCoords = parallaxMapping(fs_in.TexCoords, viewDir_Tangent, lightDir_Tangent, parallaxShadow);
+        texCoords = parallaxMapping(texCoords, viewDir_Tangent, lightDir_Tangent, parallaxShadow);
     }
 
-    vec3 albedo = texture(albedoMap, texCoords).rgb;
-    vec3 normal = texture(normalMap, texCoords).rgb;
-    
+    // ==========================================
+    // 🌟 全面接管：根据开关决定是读贴图还是用纯数字
+    // ==========================================
+
+    // 1. 获取反照率 (Albedo)
+    vec3 albedo = useAlbedoMap ? texture(albedoMap, texCoords).rgb : albedoValue;
+
+    // 2. 获取法线 (Normal)
+    vec3 normal;
+    if (useNormalMap) 
+    {
+        normal = texture(normalMap, texCoords).rgb;
+        normal = normal * 2.0 - 1.0;
+        normal = normalize(fs_in.TBN * normal); 
+    } 
+    else 
+    {
+        // 💡 魔法：如果没有法线贴图（比如完美金属球），直接使用极其平滑的几何法线 (TBN 矩阵的 Z 轴)
+        normal = normalize(fs_in.TBN[2]);
+    }
+
+    // 3. 获取 PBR 三大金刚 (ORM)
     float metallic, roughness, ao;
     if (usePackedMap)
     {
@@ -165,16 +204,57 @@ void main()
     }
     else
     {
-        metallic  = texture(metallicMap, texCoords).r;
-        roughness = texture(roughnessMap, texCoords).r;
-        ao        = texture(aoMap, texCoords).r;
+        metallic  = useMetalMap     ? texture(metallicMap, texCoords).r  : metalValue;
+        roughness = useRoughnessMap ? texture(roughnessMap, texCoords).r : roughnessValue;
+        ao        = useAOMap        ? texture(aoMap, texCoords).r        : aoValue;
     }
 
-    normal = normal * 2.0 - 1.0;
-    normal = normalize(fs_in.TBN * normal); 
+    // ==========================================
+    // 🌧️ 工业级程序化水坑系统 (Organic Procedural Puddles)
+    // ==========================================
+    vec3 geoNormal = normalize(fs_in.TBN[2]);
+    // 严格限制：只在绝对平坦的地面生成水坑 (Y > 0.9)
+    float isGround = smoothstep(0.9, 0.95, geoNormal.y);
 
+    if (isGround > 0.0) 
+    {
+        // 💡 魔法升级：分形正弦噪声 (Fractal Sine Noise)
+        // 叠加三个不同频率的波，模拟大水坑里面套小水坑的自然边缘
+        vec2 pos = fs_in.FragPos.xz;
+        float noise = sin(pos.x * 0.4) * cos(pos.y * 0.4) * 0.5 + 0.5; // 大轮廓
+        noise += sin(pos.x * 1.5 + 1.0) * cos(pos.y * 1.2 - 0.5) * 0.25; // 中细节
+        noise += sin(pos.x * 3.0 + 2.0) * cos(pos.y * 3.0 + 1.0) * 0.125; // 小碎边
+        
+        // 将 noise 严格映射回 0.0 ~ 1.0 之间
+        noise = clamp(noise, 0.0, 1.0);
+
+        // 🌟 解决“反过来”的核心：反转遮罩逻辑！
+        // 让 noise 的“低洼处”变成水坑。
+        // u_GlobalWetness 控制水面高度。假设设为 0.3，说明只淹没底层 30% 的低洼区域。
+        float puddleMask = 1.0 - smoothstep(u_GlobalWetness - 0.05, u_GlobalWetness + 0.05, noise);
+        
+        puddleMask *= isGround; // 确保水坑只在地面上
+
+        // 强行覆盖 PBR 属性，变身水面！
+        albedo = mix(albedo, albedo * 0.3, puddleMask);      // 水坑底色变暗，吸收光线
+        
+        // 真实的街道水坑边缘有一圈半湿润的过渡带，中心才是绝对光滑 (0.02)
+        roughness = mix(roughness, 0.02, puddleMask);        
+        metallic = mix(metallic, 0.0, puddleMask);           // 水绝对不是金属
+        
+        vec3 flatNormal = geoNormal; 
+        // 抹平法线：积水深的地方像镜子一样平整，水浅的地方透出一点柏油路的粗糙
+        normal = normalize(mix(normal, flatNormal, puddleMask * 0.9)); 
+        
+        gORM = vec4(ao, roughness, metallic, puddleMask);    // 把水坑 Mask 存入 Alpha 通道供 SSR 使用
+    }
+    else 
+    {
+        gORM = vec4(ao, roughness, metallic, 0.0);
+    }
+
+    // 输出至 G-Buffer
     gPosition = fs_in.FragPos;
     gNormal = normal; 
     gAlbedo_parallaxShadow = vec4(albedo, parallaxShadow);
-    gORM = vec3(ao, roughness, metallic);
 }
