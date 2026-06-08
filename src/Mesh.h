@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "Shader.h"
+#include "FrustumCulling.h" // 引入包围盒定义
 
 struct Vertex
 {
@@ -28,14 +29,28 @@ public:
     std::vector<unsigned int> indices;
     std::vector<Texture> textures;
 
-    Mesh(std::vector<Vertex> vertices, std::vector<unsigned int> indices, std::vector<Texture> textures)
+    // 🌟 新增：网格专属的包围盒
+    AABB boundingBox;
+
+    // 🌟 修改：构造函数接收计算好的 AABB
+    Mesh(std::vector<Vertex> vertices, std::vector<unsigned int> indices, std::vector<Texture> textures, AABB box)
     {
         this->vertices = vertices;
         this->indices = indices;
         this->textures = textures;
+        this->boundingBox = box; // 保存下来
 
         setupMesh();
     }
+
+    // Mesh(std::vector<Vertex> vertices, std::vector<unsigned int> indices, std::vector<Texture> textures)
+    // {
+    //     this->vertices = vertices;
+    //     this->indices = indices;
+    //     this->textures = textures;
+
+    //     setupMesh();
+    // }
 
     void Draw(const Shader& shader)
     {

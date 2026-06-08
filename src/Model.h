@@ -11,7 +11,8 @@
 #include <assimp/postprocess.h>
 
 // 1. 定义一个结构体，用来装后台线程解压出来的裸数据
-struct TextureData {
+struct TextureData
+{
     unsigned char* pixels;
     int width, height, nrComponents;
     std::string path;
@@ -38,6 +39,22 @@ public:
         // 🌟 将贴图翻转设置放在构造函数里，避免多线程同时修改 stb 的全局状态导致崩溃
         stbi_set_flip_vertically_on_load(true);
         loadModel(path);
+    }
+
+    // 🌟🌟🌟 终极渲染核心：带有视锥体剔除和性能统计的绘制 🌟🌟🌟
+    void DrawPBR_Culled(const Shader& shader, const Frustum& frustum, const glm::mat4& modelMatrix, unsigned int& display, unsigned int& total)
+    {
+        for(unsigned int i = 0; i < meshes.size(); i++)
+        {
+            total++; // 记录总 Mesh 数量
+
+            // 拿着局部 AABB 和 当前模型的矩阵，去和视锥体做生死判决！
+            if(meshes[i].boundingBox.isOnFrustum(frustum, modelMatrix))
+            {
+                meshes[i].DrawPBR(shader);
+                display++; // 活下来的 Mesh 数量
+            }
+        }
     }
 
     void Draw(Shader& shader)
@@ -131,6 +148,12 @@ private:
         std::vector<unsigned int> indices;
         std::vector<Texture> textures;
 
+        // 🌟🌟🌟 核心新增：初始化 AABB 的极值边界 🌟🌟🌟
+        // 注意避坑：求最大值要用极小值初始化，求最小值要用极大值初始化
+        // 绝对不要用 std::numeric_limits<float>::min()，它是最小的正数，应该用 lowest()！
+        glm::vec3 minAABB(std::numeric_limits<float>::max());
+        glm::vec3 maxAABB(std::numeric_limits<float>::lowest());
+
         // 🌟 核心：计算用于转换法线的正规矩阵 (Normal Matrix)
         glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
 
@@ -141,6 +164,16 @@ private:
             // 🌟🌟🌟 核心修改 1：把位置从局部空间转换到世界空间 🌟🌟🌟
             glm::vec4 worldPos = transform * glm::vec4(mesh->mVertices[i].x, mesh->mVertices[i].y, mesh->mVertices[i].z, 1.0f);
             vertex.Position = glm::vec3(worldPos);
+
+            // 🌟🌟🌟 核心新增：动态更新边界极点 🌟🌟🌟
+            // 每次拿到一个顶点的世界坐标，就去挑战当前的极限记录
+            minAABB.x = std::min(minAABB.x, vertex.Position.x);
+            minAABB.y = std::min(minAABB.y, vertex.Position.y);
+            minAABB.z = std::min(minAABB.z, vertex.Position.z);
+
+            maxAABB.x = std::max(maxAABB.x, vertex.Position.x);
+            maxAABB.y = std::max(maxAABB.y, vertex.Position.y);
+            maxAABB.z = std::max(maxAABB.z, vertex.Position.z);
 
             // 🌟🌟🌟 核心修改 2：转换法线朝向 🌟🌟🌟
             glm::vec3 worldNormal = normalMatrix * glm::vec3(mesh->mNormals[i].x, mesh->mNormals[i].y, mesh->mNormals[i].z);
@@ -204,7 +237,9 @@ private:
             textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
         }
 
-        return Mesh(vertices, indices, textures);
+        AABB meshAABB(minAABB, maxAABB);
+
+        return Mesh(vertices, indices, textures, meshAABB);
     }
 
     std::vector<Texture> loadMaterialTextures(aiMaterial* mat, aiTextureType type, std::string typeName)

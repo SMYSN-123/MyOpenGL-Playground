@@ -14,6 +14,7 @@
 #include "PhysicallyBasedBloom.h"
 #include "PBRMaterial.h"
 #include "RainyAlleyScene.h"
+#include "ComputeShader.h"
 
 #include <glm.hpp>
 #include <gtc/matrix_transform.hpp>
@@ -158,6 +159,11 @@ int main() {
     Shader ssaoBlurShader("../src/screen.vs", "../src/ssao_blur.fs");
     Shader ssrRayMarchingTraceShader("../src/screen.vs", "../src/ssr_ray_marching.fs");
     Shader ssrCompositeShader("../src/screen.vs", "../src/ssr_composite.fs");
+    Shader volumetricLightShader("../src/deferred_pure_pbr.vs", "../src/volumetric_light.fs");
+    Shader rainShader("../src/rain.vs", "../src/rain.fs");
+
+    ComputeShader computeShader("../src/compute.cs");
+    ComputeShader rainComputeShader("../src/rain.cs");
 
     // Lens Dirt
     loadTexture Lens_Dirt("../extern/Lens Dirt/lens_dirt.jpg", false);
@@ -181,9 +187,13 @@ int main() {
     unsigned int uniformBlockIndexssaoShader = glGetUniformBlockIndex(ssaoShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexssrRayMarchingTraceShader = glGetUniformBlockIndex(ssrRayMarchingTraceShader.ProgramID, "Matrices");
     unsigned int uniformBlockIndexssrCompositeShader = glGetUniformBlockIndex(ssrCompositeShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexvolumetricLightShader = glGetUniformBlockIndex(volumetricLightShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexrainShader = glGetUniformBlockIndex(rainShader.ProgramID, "Matrices");
+    unsigned int uniformBlockIndexrainComputeShader = glGetUniformBlockIndex(rainComputeShader.ProgramID, "Matrices");
 
     unsigned int uniformBlockIndexcsmShadowDepthShader = glGetUniformBlockIndex(csmShadowDepthShader.ProgramID, "LightSpaceMatrices");
     unsigned int uniformBlockIndexdeferredPurePBRShader_light = glGetUniformBlockIndex(deferredPurePBRShader.ProgramID, "LightSpaceMatrices");
+    unsigned int uniformBlockIndexvolumetricLightShader_light = glGetUniformBlockIndex(volumetricLightShader.ProgramID, "LightSpaceMatrices");
 
     glUniformBlockBinding(shiner.ProgramID, uniformBlockIndexshinerShader, 0);
     glUniformBlockBinding(deferredPurePBRShader.ProgramID, uniformBlockIndexdeferredPurePBRShader_matrices, 0);
@@ -191,10 +201,14 @@ int main() {
     glUniformBlockBinding(glassballShader.ProgramID, uniformBlockIndexglassballShader, 0);
     glUniformBlockBinding(ssaoShader.ProgramID, uniformBlockIndexssaoShader, 0);
     glUniformBlockBinding(ssrCompositeShader.ProgramID, uniformBlockIndexssrCompositeShader, 0);
-
+    glUniformBlockBinding(volumetricLightShader.ProgramID, uniformBlockIndexvolumetricLightShader, 0);
     glUniformBlockBinding(ssrRayMarchingTraceShader.ProgramID, uniformBlockIndexssrRayMarchingTraceShader, 0);
+    glUniformBlockBinding(rainShader.ProgramID, uniformBlockIndexrainShader, 0);
+    glUniformBlockBinding(rainComputeShader.ProgramID, uniformBlockIndexrainComputeShader, 0);
+
     glUniformBlockBinding(csmShadowDepthShader.ProgramID, uniformBlockIndexcsmShadowDepthShader, 1);
     glUniformBlockBinding(deferredPurePBRShader.ProgramID, uniformBlockIndexdeferredPurePBRShader_light, 1);
+    glUniformBlockBinding(volumetricLightShader.ProgramID, uniformBlockIndexvolumetricLightShader_light, 1);
 
     // G-buffer
     unsigned int gBuffer;
@@ -329,7 +343,9 @@ int main() {
     // equirectangularMap
     stbi_set_flip_vertically_on_load(true);
     int width, height, nrComponents;
+    // float *data = stbi_loadf("../src/overcast_soil_puresky_4k.hdr", &width, &height, &nrComponents, 0);
     float *data = stbi_loadf("../src/the_sky_is_on_fire_4k.hdr", &width, &height, &nrComponents, 0);
+    // float *data = stbi_loadf("../src/viale_giuseppe_garibaldi_4k.hdr", &width, &height, &nrComponents, 0);
 
     unsigned int equirectangularMap;
     if (data)
@@ -516,15 +532,6 @@ int main() {
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // --- 准备用于 Debug 的 FBO ---
-    unsigned int debugFBO;
-    glGenFramebuffers(1, &debugFBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, debugFBO);
-
-    // 将你生成的 brdfLUT 贴图挂载到这个 FBO 的颜色附件 0 上
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, brdfLUTTexture, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
     bloomRenderer.Init(SCR_WIDTH, SCR_HEIGHT);
 
     // --- 🌟 新增：后期处理中间缓冲 (Post-Process FBO) ---
@@ -636,8 +643,40 @@ int main() {
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // 🌟 第一步：在进入 while 渲染循环之前，定义好你的路灯数据！
-    std::vector<glm::vec3> lightPositions = {
+    struct Particle
+    {
+        glm::vec4 Position;
+        glm::vec4 Velocity;
+    };
+
+    const int NUM_PARTICLES = 150000;
+    std::vector<Particle> particles(NUM_PARTICLES);
+    for (int i = 0; i < NUM_PARTICLES; ++i) {
+        float x = (rand() % 10000 / 100.0f) - 50.0f;
+        float y = (rand() % 4000 / 100.0f) + 10.0f; // 随机高度 10~50
+        float z = (rand() % 10000 / 100.0f) - 50.0f;
+        // 🌟 修正：最后一个参数改成 0.0f，代表出厂状态是“下落”
+        particles[i].Position = glm::vec4(x, y, z, 0.0f);
+        // 给一个极快的下落速度
+        particles[i].Velocity = glm::vec4(0.0f, -25.0f, 0.0f, 0.0f);
+    }
+
+    unsigned int ssbo;
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, particles.size() * sizeof(Particle), particles.data(), GL_DYNAMIC_DRAW);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, ssbo, 0, particles.size() * sizeof(Particle));
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    unsigned int emptyVAO;
+    glGenVertexArrays(1, &emptyVAO);
+
+    // ============================================================================
+    // 🌟 赛博朋克光影调色盘：11 盏路灯 + 10 盏霓虹灯
+    // ============================================================================
+
+    // 1. 保留原有的 11 盏路灯 (提供基础暖色照明)
+    std::vector<glm::vec3> streetLightPositions = {
         glm::vec3(4.00213f, 6.01378f, -4.17447f),
         glm::vec3(-2.30235f, 6.04963f, 2.58851f),
         glm::vec3(5.18049f, 5.99219f, 2.49504f),
@@ -651,13 +690,79 @@ int main() {
         glm::vec3(20.7122f, 6.01481f, 14.2775f)
     };
 
-    // 💡 物理光照的亮度必须要“大”！
-    // 因为这 11 盏都是路灯，我们统一给它们设置高强度的暖白光/黄光 (钠灯的颜色)
-    std::vector<glm::vec3> lightColors;
-    for (size_t i = 0; i < lightPositions.size(); i++) {
-        // R=150, G=130, B=90，模拟老式赛博朋克街道上发黄发暖的钨丝灯/高压钠灯
-        lightColors.push_back(glm::vec3(150.0f, 130.0f, 90.0f)); 
+    struct Light
+    {
+        glm::vec4 Position; // XYZ: 位置, W: 衰减半径 (Radius)
+        glm::vec4 Color;    // RGB: 颜色, W: 发光强度 (Intensity)
+    };
+
+    std::vector<Light> lightData;
+
+    // --- A. 装配路灯 ---
+    for (size_t i = 0; i < streetLightPositions.size(); i++)
+    {
+        Light light;
+        float lightRadius = 15.0f; // 路灯照亮范围较大
+        float lightIntensity = 10.0f; // 亮度中等，作为环境底光
+        light.Position = glm::vec4(streetLightPositions[i], lightRadius);
+        light.Color = glm::vec4(glm::vec3(150.0f, 130.0f, 90.0f) / 255.0f, lightIntensity);
+        lightData.push_back(light);
     }
+
+    std::vector<glm::vec3> neonPositions = {
+        glm::vec3(5.49142f, 4.71312f, -4.72402f),
+        glm::vec3(4.57291f, 4.6813f, -6.17225f),
+        glm::vec3(-7.14997f, 5.27681f, 3.50051f),
+        glm::vec3(6.27018f, 4.44384f, 3.54728f),
+        glm::vec3(8.85266f, 4.7669f, 2.07775f),
+        glm::vec3(-14.1141f, 4.59362f, 2.05234f),
+        glm::vec3(-16.829f, 6.14374f, 9.94643f),
+        glm::vec3(-23.5339f, 6.03975f, 3.09581f),
+        glm::vec3(-11.0537f, 6.29027f, -3.5572f),
+        glm::vec3(-6.50755f, 11.0187f, 5.63222f) 
+    };
+
+    // 🌟 新增：手动一对一指定颜色，告别取余算法！(假设颜色范围是 0~255)
+    // 如果你发现图二的前两个灯颜色反了，只需要把前两个 vec3 调换一下位置即可！
+    std::vector<glm::vec3> neonColors = {
+        glm::vec3(0.0f, 220.0f, 255.0f),   // 1. 高饱和度电磁青
+        glm::vec3(255.0f, 20.0f, 120.0f),  // 2. 热烈霓虹粉红
+        glm::vec3(138.0f, 43.0f, 226.0f),  // 3. 魔幻紫罗兰色
+        glm::vec3(20.0f, 180.0f, 255.0f),  // 4. 清爽冰蓝色
+        glm::vec3(57.0f, 255.0f, 20.0f),   // 5. 毒气荧光绿
+        glm::vec3(255.0f, 140.0f, 0.0f),   // 6. 热烈暖黄色
+        glm::vec3(0.0f, 255.0f, 180.0f),   // 7. 荧光青蓝色
+        glm::vec3(255.0f, 20.0f, 147.0f),  // 8. 深邃玫瑰粉
+        glm::vec3(150.0f, 200.0f, 255.0f), // 9. 冷白/清蓝色
+        glm::vec3(255.0f, 0.0f, 100.0f)    // 10. 高处广告牌 (高强度赛博洋红)
+    };
+
+    // ... 在组装 lightData 的 B 阶段：
+    for (size_t i = 0; i < neonPositions.size(); i++)
+    {
+        Light light;
+        float radius = 10.0f;  
+        float intensity = 35.0f; 
+
+        if (i == 9) {
+            radius = 25.0f; 
+            intensity = 45.0f;
+        }
+
+        light.Position = glm::vec4(neonPositions[i], radius);
+        // 🌟 直接读取上面指定的专属颜色！
+        light.Color = glm::vec4(neonColors[i] / 255.0f, intensity);
+        lightData.push_back(light);
+    }
+
+    // --- C. 构建并绑定 SSBO ---
+    unsigned int lightSSBO;
+    glGenBuffers(1, &lightSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, lightSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, lightData.size() * sizeof(Light), lightData.data(), GL_DYNAMIC_DRAW);
+    // 🌟 重点：绑定到 1 号位，绝不能和粒子的 0 号位冲突！
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, lightSSBO, 0, lightData.size() * sizeof(Light));
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // 解绑 VBO (可选，是个好习惯)
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -743,7 +848,7 @@ int main() {
         }
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 500.0f);
+        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH/(float)SCR_HEIGHT, 0.1f, 1000.0f);
         glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(glm::mat4), glm::value_ptr(projection));
 
@@ -751,6 +856,29 @@ int main() {
         glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
         glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+        // ===================================================
+        // 🚀 [新增] 每一帧的绝对开头：启动 Compute Shader 算物理
+        // ===================================================
+        rainComputeShader.use();
+
+        rainComputeShader.setFloat("deltaTime", deltaTime);
+        rainComputeShader.setFloat("time", currentFrame);
+        rainComputeShader.setVec3("cameraPos", camera.Position);
+
+        // 绑定 G-Buffer 世界坐标贴图
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, gPosition);
+        rainComputeShader.setInt("gPositionMap", 0);
+
+        // 🌟 [新增] 绑定 G-Buffer 法线贴图，让水滴知道怎么反弹！
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, gNormal);
+        rainComputeShader.setInt("gNormalMap", 1);
+
+        glDispatchCompute(NUM_PARTICLES / 256 + 1, 1, 1);
+
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
         // 🌟 Pass 1: 定向光阴影贴图 (CSM Shadow Pass)
         glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
@@ -761,7 +889,7 @@ int main() {
 
         csmShadowDepthShader.use();
 
-        rainyAlley.Draw(csmShadowDepthShader);
+        rainyAlley.Draw(csmShadowDepthShader, camera, static_cast<float>(SCR_WIDTH), static_cast<float>(SCR_HEIGHT));
 
         // 🌟 Pass 2: 几何阶段 (G-Buffer Geometry Pass)
         glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
@@ -777,7 +905,9 @@ int main() {
 
         gBufferShader.setFloat("u_GlobalWetness", 0.35f);
 
-        rainyAlley.Draw(gBufferShader);
+        gBufferShader.setFloat("u_Time", currentFrame);
+
+        rainyAlley.Draw(gBufferShader, camera, static_cast<float>(SCR_WIDTH), static_cast<float>(SCR_HEIGHT));
 
         // 🌟 Pass 2.1: 计算 SSAO 阶段
         glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
@@ -842,14 +972,14 @@ int main() {
         // 🌟🌟🌟 第二步：将采集到的点光源坐标和颜色传给 Shader 🌟🌟🌟
         // ==============================================================
         // 告诉 Shader 当前一共有多少盏灯
-        deferredPurePBRShader.setInt("activePointLightsCount", static_cast<int>(lightPositions.size()));
+        deferredPurePBRShader.setInt("activePointLightsCount", static_cast<int>(lightData.size()));
         
-        // 循环遍历，把数组里的数据绑定到 Shader 的 uniform struct 数组中
-        for (size_t i = 0; i < lightPositions.size(); i++)
-        {
-            deferredPurePBRShader.setVec3("pointLights[" + std::to_string(i) + "].Position", lightPositions[i]);
-            deferredPurePBRShader.setVec3("pointLights[" + std::to_string(i) + "].Color", lightColors[i]);
-        }
+        // // 循环遍历，把数组里的数据绑定到 Shader 的 uniform struct 数组中
+        // for (size_t i = 0; i < lightPositions.size(); i++)
+        // {
+        //     deferredPurePBRShader.setVec3("pointLights[" + std::to_string(i) + "].Position", lightPositions[i]);
+        //     deferredPurePBRShader.setVec3("pointLights[" + std::to_string(i) + "].Color", lightColors[i]);
+        // }
 
         deferredPurePBRShader.setInt("cascadeCount", static_cast<int>(shadowCascadeLevels.size()));
         for (size_t i = 0; i < shadowCascadeLevels.size(); ++i)
@@ -872,6 +1002,48 @@ int main() {
 
         renderScreenQuad();
 
+        // ==========================================
+        // 🌟 [新增] Pass 3.5: 全局体积光 (月光神明之光)
+        // ==========================================
+        glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO); // 继续画在 HDR 缓冲上
+        
+        // 🌟 开启加法混合！把算出来的光柱直接“叠”在建筑表面上
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        glDisable(GL_DEPTH_TEST); // 全屏后处理，关深度
+
+        volumetricLightShader.use();
+
+        // 1. 绑 G-Buffer 拿到世界坐标和法线
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, gPosition);
+        volumetricLightShader.setInt("gPosition", 0);
+
+        // 2. 绑 CSM 阴影阵列
+        glActiveTexture(GL_TEXTURE10);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, lightDepthMaps);
+        volumetricLightShader.setInt("shadowMap", 10);
+
+        // 3. 传参：摄像机位置，月光方向，月光颜色
+        volumetricLightShader.setVec3("viewPos", camera.Position);
+        volumetricLightShader.setVec3("lightDir", lightDir);
+        // 为了让你看得明显，我们给一个贼亮的幽蓝色光柱
+        volumetricLightShader.setVec3("lightColor", glm::vec3(1.0, 1.5, 2.0)); 
+
+        // 4. 传 CSM 的级联切割参数
+        volumetricLightShader.setInt("cascadeCount", static_cast<int>(shadowCascadeLevels.size()));
+        for (size_t i = 0; i < shadowCascadeLevels.size(); ++i) {
+            volumetricLightShader.setFloat("cascadePlaneDistances[" + std::to_string(i) + "]", shadowCascadeLevels[i]);
+        }
+
+        volumetricLightShader.setInt("activePointLightsCount", static_cast<int>(lightData.size()));
+
+        renderScreenQuad();
+
+        // 画完之后立刻关闭混合，恢复深度测试，防止弄坏后面的渲染！
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+
         // 🌟 Pass 4: 深度拷贝 (Depth Blit) - 极其重要的一步！
         // 因为前面的光照阶段是在 2D 矩形上画的，hdrFBO 里没有场景的深度信息。
         // 如果现在直接画天空盒和玻璃，它们会覆盖掉前面的物体。
@@ -889,39 +1061,61 @@ int main() {
 
         shiner.use();
 
-        // 💡 遍历你那 11 盏路灯的位置，在每个位置画一个发光的小球！
-        for (size_t i = 0; i < lightPositions.size(); ++i)
+        // 💡 1. 遍历全新的 lightData 数组，画出 21 个物理灯泡！
+        for (size_t i = 0; i < lightData.size(); ++i)
         {
             glm::mat4 lightModel = glm::mat4(1.0f);
             
-            // 1. 移动到路灯的坐标
-            lightModel = glm::translate(lightModel, lightPositions[i]);
-            
-            // 2. 🌟 极其关键：缩小球体！
-            // 默认的 sphere 模型通常半径是 1 米，太大了！
-            // 缩小到 0.15 倍，让它看起来像个灯泡，刚好卡在模型原本的灯罩里
+            // 从 vec4 中解包出 vec3 的坐标
+            glm::vec3 pos = glm::vec3(lightData[i].Position);   
+            lightModel = glm::translate(lightModel, pos);
             lightModel = glm::scale(lightModel, glm::vec3(0.09f));
 
             shiner.setMat4("model", lightModel);
             
-            // 传入极高强度的颜色，激活 Bloom 光晕！
-            shiner.setVec3("lightColor", lightColors[i]);
+            // 🌟 核心：取出基础颜色，并乘以它的物理强度 (w分量) 让灯泡极度亮眼！
+            glm::vec3 col = glm::vec3(lightData[i].Color);
+            float intensity = lightData[i].Color.w;
+            // 控制一下灯泡自身的白化程度，保留赛博色彩
+            shiner.setVec3("lightColor", col * (intensity * 10.0f)); 
 
-            renderSphere(); // 调用你的画球函数
+            renderSphere(); 
         }
 
-        glDepthFunc(GL_LESS); // 画完恢复默认深度测试
+        // 画月亮 (太阳)
+        glm::mat4 sunModel = glm::mat4(1.0f);
+        sunModel = glm::translate(sunModel, camera.Position - lightDir * 500.0f); // 确保在天空
+        sunModel = glm::scale(sunModel, glm::vec3(10.0f)); // 稍微放大点
+        shiner.setMat4("model", sunModel);
+        shiner.setVec3("lightColor", glm::vec3(2.0, 3.0, 4.0)); // 偏冷的月光色
+        renderSphere();
 
-        // backgroundShader.use();
+        // ===================================================
+        // 🌧️ [新增] 前向渲染最后一步：降下暴雨！
+        // ===================================================
+        rainShader.use();
 
-        // glDepthFunc(GL_LEQUAL);
+        rainShader.setFloat("time", currentFrame);
+        rainShader.setVec3("cameraPos", camera.Position); // 🌟 传给距离渐隐使用
 
-        // glActiveTexture(GL_TEXTURE0);
-        // glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+        rainShader.setInt("activePointLightsCount", static_cast<int>(lightData.size()));
 
-        // renderCube();
+        glEnable(GL_BLEND);
+        // 🚨 魔法混合：改成 GL_ONE（加法混合）！
+        // 这样雨丝重叠时会变亮，极其适合表现夜晚发光的雨幕！
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        
+        // 🚨【非常重要】关闭深度写入！让雨丝不要互相遮挡！
+        glDepthMask(GL_FALSE); 
 
-        glDepthMask(GL_TRUE);
+        glBindVertexArray(emptyVAO);
+        // ✅ 替换为最潮的点精灵渲染指令 (注意数量也变回真实的粒子数了)：
+        glDrawArrays(GL_LINES, 0, NUM_PARTICLES * 2);
+
+        glBindVertexArray(0);
+        
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE); // 🚨 画完立刻恢复！
         glDepthFunc(GL_LESS);
 
         // 🌟 Pass 5.5: 屏幕空间反射 (SSR) 阶段
@@ -985,30 +1179,18 @@ int main() {
 
         glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
-        // glEnable(GL_BLEND);
-
-        if (showDebugDepth) {
-            // --- 🔧 调试模式：直接 Blit BRDF 贴图 ---
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, debugFBO);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); // 0 表示屏幕默认缓冲
-
-            // 全屏覆盖 (方便看清细节，参数填你的屏幕宽高)
-            glBlitFramebuffer(0, 0, 512, 512, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-            glBindFramebuffer(GL_FRAMEBUFFER, 0); // 恢复默认状态
-
-            debugShader.use();
-
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, ssaoColorBufferBlur); // 绑上 BRDF 贴图
-
-            renderScreenQuad();
+        if (showDebugDepth)
+        {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glEnable(GL_DEPTH_TEST);
         }
-        else {
+        else
+        {
             // --- 🎨 正常后期处理 (ToneMapping + Gamma + Bloom合成) ---
             // 目标：渲染到我们刚才新建的 postProcessFBO 里
             glBindFramebuffer(GL_FRAMEBUFFER, postProcessFBO); 
-            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClearColor(0.02f, 0.02f, 0.05f, 1.0f); // 给一个极暗的夜空色
             glClear(GL_COLOR_BUFFER_BIT);
 
             postProcessShader.use();
@@ -1023,7 +1205,39 @@ int main() {
             glBindTexture(GL_TEXTURE_2D, bloom ? bloomRenderer.BloomTexture() : 0); // 泛光
             Lens_Dirt.bind(2); // 镜头污渍
 
-            renderScreenQuad(); // 此时 postProcessTexture 已经被填满了 LDR 画面
+            // 🌟 重新加回：计算 3D 坐标到 2D 屏幕的投影，用于传递给 Shader 绘制正六边形
+            std::vector<glm::vec2> lightScreenPositions;
+            std::vector<glm::vec3> lightScreenColors;
+            
+            // 遍历所有路灯和霓虹灯
+            for (size_t i = 0; i < lightData.size(); ++i) {
+                glm::vec3 pos = glm::vec3(lightData[i].Position);
+                glm::vec4 clip = projection * view * glm::vec4(pos, 1.0f);
+                if (clip.z > 0) { // 只算在相机前方的
+                    glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                    lightScreenPositions.push_back(glm::vec2(ndc) * 0.5f + 0.5f);
+                    lightScreenColors.push_back(glm::vec3(lightData[i].Color));
+                }
+            }
+
+            // 把月亮也塞进去
+            glm::vec4 sunClip = projection * view * glm::vec4(camera.Position - lightDir * 500.0f, 1.0f);
+            if (sunClip.z > 0) {
+                glm::vec3 sunNDC = glm::vec3(sunClip) / sunClip.w;
+                lightScreenPositions.push_back(glm::vec2(sunNDC) * 0.5f + 0.5f);
+                lightScreenColors.push_back(glm::vec3(1.0, 1.5, 2.0));
+            }
+
+            // 送入 Shader
+            postProcessShader.setInt("numLights", (int)lightScreenPositions.size());
+            for (int i = 0; i < lightScreenPositions.size(); ++i) {
+                // 如果你的 Shader 里数组没改大，限制一下防止越界崩溃！
+                if (i >= 32) break; 
+                postProcessShader.setVec2("lightsPos[" + std::to_string(i) + "]", lightScreenPositions[i]);
+                postProcessShader.setVec3("lightsColor[" + std::to_string(i) + "]", lightScreenColors[i]);
+            }
+
+            renderScreenQuad(); // 画出带炫酷光晕的画面
 
             // --- 🖥️ 屏幕输出阶段 (FXAA 抗锯齿上屏) ---
             // 目标：回到默认的电脑屏幕缓冲 (0)

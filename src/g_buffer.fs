@@ -46,6 +46,68 @@ uniform float aoValue;
 uniform float u_GlobalWetness;
 uniform sampler2D puddleNoiseMap;
 
+uniform float u_Time; // C++ 传进来的运行时间 glfwGetTime()
+
+// ==========================================
+// 🌟 黑魔法 1：3D 向量转 2D 的时空哈希函数
+// ==========================================
+vec2 hash32(vec3 p3) {
+    p3 = fract(p3 * vec3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+// --- 核心：程序化雨滴涟漪生成器 ---
+// 输入：世界坐标的 XZ 平面 (uv), 缩放比例 (scale), 系统时间 (time)
+// 输出：一个被扰动的法线向量 (Normal)
+// ==========================================
+// 🌟 黑魔法 2：真正的多层级随机动态涟漪
+// ==========================================
+vec3 ComputeRipples(vec2 uv, float scale, float time) {
+    vec3 normalSum = vec3(0.0);
+    float weightSum = 0.0;
+    
+    // 我们叠加两层波纹，让水面看起来更加错落有致
+    for (float layer = 0.0; layer < 2.0; layer++) {
+        // 让不同层的网格稍微错开
+        vec2 p = uv * scale + vec2(layer * 12.34);
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                vec2 neighbor = vec2(x, y);
+                
+                // 🌟 1. 彻底抛弃 floor(time)！种子只受空间位置和所在层数影响
+                vec2 dropPos = hash32(vec3(i + neighbor, layer)); 
+                vec2 dropCenter = neighbor + dropPos;
+                
+                vec2 diff = f - dropCenter;
+                float dist = length(diff);
+                
+                // 🌟 2. 使用连续的时间 fract，利用 dropPos.x 作为相位偏移，让每滴雨下落时间不同步
+                float dropTime = fract(time * 1.5 + dropPos.x);
+                
+                float wave = sin(dist * 30.0 - dropTime * 20.0);
+                
+                // 🌟 3. 完美的生命周期包络线 (Envelope)
+                // 刚出生(0.0)时迅速变亮，到达 0.6 时就开始衰减，到 1.0 时【绝对】透明！
+                // 这样当 fract 重新跳回 0.0 时，波纹刚好是看不见的，完美掩盖了跳变残影！
+                float timeFade = smoothstep(0.0, 0.1, dropTime) * smoothstep(1.0, 0.6, dropTime);
+                float distFade = smoothstep(0.5, 0.1, dist);
+                
+                float fade = distFade * timeFade;
+                
+                vec2 normalOffset = -diff * wave * fade;
+                normalSum += vec3(normalOffset.x, fade, normalOffset.y);
+                weightSum += fade;
+            }
+        }
+    }
+    if (weightSum > 0.0) return normalize(vec3(normalSum.x * 2.0, 1.0, normalSum.z * 2.0));
+    return vec3(0.0, 1.0, 0.0); 
+}
+
 vec2 parallaxMapping(vec2 texCoords, vec3 viewDir, vec3 lightDir, out float parallaxShadow)
 {
     // ✅ 迭代法实现视差映射
@@ -210,9 +272,31 @@ void main()
     }
 
     // ==========================================
-    // 🌧️ 工业级程序化水坑系统 (Organic Procedural Puddles)
+    // 🌧️ 1. 全局物理湿滑处理 (Global PBR Wetness)
     // ==========================================
     vec3 geoNormal = normalize(fs_in.TBN[2]);
+    
+    // 计算受雨面：法线越朝上 (Y接近1)，淋得越湿；垂直的墙壁 (Y=0) 只能湿一点点
+    float upFactor = clamp(geoNormal.y * 0.5 + 0.5, 0.0, 1.0); 
+    
+    // 生成一个微观的表面孔隙噪声，让湿润感不要太平滑死板
+    float porousNoise = fract(sin(dot(fs_in.FragPos.xz, vec2(12.9898, 78.233))) * 43758.5453);
+    
+    // 最终湿度：受全局降雨量、朝向和表面孔隙率共同影响
+    float wetLevel = u_GlobalWetness * upFactor * mix(0.7, 1.0, porousNoise);
+
+    // 🌟 物理覆写 A：变暗 (内部散射吸收)
+    // 注意：纯金属不吸水（比如铁桶），只有绝缘体（如石头、木头）才会显著变暗！
+    float darkeningFactor = mix(0.3, 1.0, metallic); // 非金属变暗到 30%，金属保持 100%
+    albedo = mix(albedo, albedo * darkeningFactor, wetLevel);
+
+    // 🌟 物理覆写 B：变滑 (微表面被水填平)
+    // 即使是墙壁，湿了也会泛现出一点点镜面高光
+    roughness = mix(roughness, roughness * 0.2, wetLevel);
+
+    // ==========================================
+    // 🌧️ 工业级程序化水坑系统 (Organic Procedural Puddles)
+    // ==========================================
     // 严格限制：只在绝对平坦的地面生成水坑 (Y > 0.9)
     float isGround = smoothstep(0.9, 0.95, geoNormal.y);
 
@@ -241,11 +325,25 @@ void main()
         // 真实的街道水坑边缘有一圈半湿润的过渡带，中心才是绝对光滑 (0.02)
         roughness = mix(roughness, 0.02, puddleMask);        
         metallic = mix(metallic, 0.0, puddleMask);           // 水绝对不是金属
-        
-        vec3 flatNormal = geoNormal; 
+
+        // 🌟🌟🌟 新增：召唤涟漪神力！
+        // pos 是当前的世界 XZ 坐标。
+        // scale=3.0 控制雨滴密度，u_Time 驱动扩散动画
+        // 🌟 生成动态随机涟漪法线！
+        vec3 rippleNormal = ComputeRipples(pos, 4.0, u_Time);
+        float rippleIntensity = 0.8; // 涟漪的起伏强度
+
+        vec3 flatNormal = geoNormal;
+
+        // 🌟 核心融合：把黑盒算出来的 X 和 Z 方向的波纹倾斜，加到平静的水面上！
+        // 必须乘以 puddleMask，保证干地上没有波纹！
+        flatNormal.x += rippleNormal.x * puddleMask * rippleIntensity;
+        flatNormal.z += rippleNormal.z * puddleMask * rippleIntensity;
+        flatNormal = normalize(flatNormal);
+
         // 抹平法线：积水深的地方像镜子一样平整，水浅的地方透出一点柏油路的粗糙
         normal = normalize(mix(normal, flatNormal, puddleMask * 0.9)); 
-        
+
         gORM = vec4(ao, roughness, metallic, puddleMask);    // 把水坑 Mask 存入 Alpha 通道供 SSR 使用
     }
     else 

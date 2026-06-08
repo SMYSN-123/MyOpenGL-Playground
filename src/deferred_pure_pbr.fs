@@ -1,4 +1,4 @@
-#version 330 core
+#version 430 core
 layout (location = 0) out vec4 FragColor;
 
 in vec2 TexCoords;
@@ -9,13 +9,25 @@ uniform sampler2D gNormal;
 uniform sampler2D gAlbedo_parallaxShadow;
 uniform sampler2D gORM;
 
-// --- 🌟 [新增] 点光源数据结构 ---
-struct PointLight {
-    vec3 Position;
-    vec3 Color;
+// // --- 🌟 [新增] 点光源数据结构 ---
+// struct PointLight {
+//     vec3 Position;
+//     vec3 Color;
+// };
+// #define MAX_POINT_LIGHTS 32
+// uniform PointLight pointLights[MAX_POINT_LIGHTS];
+
+struct Light
+{
+    vec4 Position; // w 分量可以用来区分点光源（w=1）和聚光灯（w=0）
+    vec4 Color;    // w 分量可以用来存储强度或其他参数
 };
-#define MAX_POINT_LIGHTS 32
-uniform PointLight pointLights[MAX_POINT_LIGHTS];
+
+layout (std430, binding = 1) buffer LightBuffer
+{
+    Light lights[];
+};
+
 uniform int activePointLightsCount;
 
 // 🟢 [新增] 引入模糊后的 SSAO 贴图
@@ -209,14 +221,35 @@ void main()
     
     for(int i = 0; i < activePointLightsCount; ++i)
     {
-        // 算出点光源的距离和方向
-        vec3 L_pt = normalize(pointLights[i].Position - FragPos);
+        // 1. 解包数据
+        vec3 lightPos = lights[i].Position.xyz;
+        float lightRadius = lights[i].Position.w;   
+        vec3 lightColor = lights[i].Color.xyz;
+        float lightIntensity = lights[i].Color.w;   
+
+        // 🌟 核心修复：千万别提前 normalize！
+        vec3 L_pt = lightPos - FragPos; // 真实的距离向量
+        float distSquare = dot(L_pt, L_pt); // 真实的距离平方（比如离了10米，这里就是100）
+        float dist = sqrt(distSquare); // 真实的距离
+
+        L_pt = normalize(L_pt); // 算完距离后，再把它变成方向向量！
         vec3 H_pt = normalize(V + L_pt);
-        float dist = length(pointLights[i].Position - FragPos);
-        
-        // 物理衰减 (防除零)
-        float attenuation = 1.0 / (dist * dist + 1.0);
-        vec3 radiance_pt = pointLights[i].Color * attenuation;
+
+        // 🌟 UE4 物理平滑截断衰减 
+        float distanceSq = max(distSquare, 0.0001);
+        float attenuation = 1.0 / (distanceSq + 1.0); 
+
+        float factor = distanceSq / (lightRadius * lightRadius);
+        float smoothFactor = clamp(1.0 - factor * factor, 0.0, 1.0);
+        float falloff = smoothFactor * smoothFactor;
+
+        attenuation = attenuation * falloff * lightIntensity;
+
+        if (attenuation <= 0.001) {
+            continue;
+        }
+
+        vec3 radiance_pt = lightColor * attenuation;
 
         // PBR 计算
         vec3 F_pt  = fresnelSchlick(max(dot(H_pt, V), 0.0), F0);
